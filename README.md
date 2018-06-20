@@ -25,6 +25,9 @@ python3系 で以下をインストールして下さい
  - [miu200521358/3d-pose-baseline-vmd](https://github.com/miu200521358/3d-pose-baseline-vmd)
  - [miu200521358/VMD-3d-pose-baseline-multi](https://github.com/miu200521358/VMD-3d-pose-baseline-multi)
 
+## モデルデータ
+
+[tensorflow用モデルデータ](http://campar.in.tum.de/files/rupprecht/depthpred/NYU_FCRN-checkpoint.zip)を「`tensorflow/data`」ディレクトリを作成し、以下に配置する
 
 ## 実行方法
 
@@ -35,12 +38,14 @@ python3系 で以下をインストールして下さい
 1. `深度推定間隔` が聞かれるので、深度推定を行うフレームの間隔(整数のみ)を指定する
     - 指定された間隔ごとに深度推定を行う
     - 未指定の場合、デフォルトで「10」とする
+    - 値が小さいほど細かく深度推定を行うが、その分処理が遅くなる
 1. `詳細なログを出すか` 聞かれるので、出す場合、`yes` を入力する
     - 未指定 もしくは `no` の場合、通常ログ
 1. 処理開始
 1. 処理が終了すると、1. の結果ディレクトリ以下に結果が出力される
     - depth.txt …　腰位置の深度推定値リスト
     - movie_depth.gif　…　深度推定の合成アニメーションGIF
+        - 白い点が腰位置として取得したポイントになる
     - depth/depth_0000000000xx.png … 各フレームの深度推定結果
 
 ## ライセンス
