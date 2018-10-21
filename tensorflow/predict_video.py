@@ -116,26 +116,70 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d):
 
                 logger.debug("smoothed_2d[n] {0}".format(smoothed_2d[n]))
 
-                # 両足の付け根の中間を取得する
-                smoothed_center_x = np.average([smoothed_2d[n][0][0], smoothed_2d[n][1][0]])
-                smoothed_center_y = np.average([smoothed_2d[n][0][1], smoothed_2d[n][1][1]])
+                # 腰 ------------------------
 
-                logger.debug("smoothed_center_x: {0}, smoothed_center_y: {1}".format(smoothed_center_x, smoothed_center_y))
+                # 両足の付け根の中間を取得する
+                waist_smoothed_center_x = np.average([smoothed_2d[n][0][0], smoothed_2d[n][1][0]])
+                waist_smoothed_center_y = np.average([smoothed_2d[n][0][1], smoothed_2d[n][1][1]])
+
+                logger.debug("waist_smoothed_center_x: {0}, waist_smoothed_center_y: {1}".format(waist_smoothed_center_x, waist_smoothed_center_y))
 
                 # オリジナルの画像サイズから、縮尺を取得
-                scale_orig_x = smoothed_center_x / orig_width
-                scale_orig_y = smoothed_center_y / orig_height
+                waist_scale_orig_x = waist_smoothed_center_x / orig_width
+                waist_scale_orig_y = waist_smoothed_center_y / orig_height
 
-                logger.debug("scale_orig_x: {0}, scale_orig_y: {1}".format(scale_orig_x, scale_orig_y))
+                logger.debug("waist_scale_orig_x: {0}, waist_scale_orig_y: {1}".format(waist_scale_orig_x, waist_scale_orig_y))
 
                 # 縮尺を展開して、深度解析後の画像サイズに合わせる
-                pred_x = int(pred_width * scale_orig_x)
-                pred_y = int(pred_height * scale_orig_y)
+                waist_pred_x = int(pred_width * waist_scale_orig_x)
+                waist_pred_y = int(pred_height * waist_scale_orig_y)
 
-                logger.debug("pred_x: {0}, pred_y: {1}, depth: {2}".format(pred_x, pred_y, pred[0][pred_y][pred_x][0]))
+                logger.debug("waist_pred_x: {0}, waist_pred_y: {1}, depth: {2}".format(waist_pred_x, waist_pred_y, pred[0][waist_pred_y][waist_pred_x][0]))
+
+                # 右足首 ------------------------
+
+                # 右足首を取得する
+                right_ankle_smoothed_center_x = smoothed_2d[n][2][0]
+                right_ankle_smoothed_center_y = smoothed_2d[n][2][1]
+
+                logger.debug("right_ankle_smoothed_center_x: {0}, right_ankle_smoothed_center_y: {1}".format(right_ankle_smoothed_center_x, right_ankle_smoothed_center_y))
+
+                # オリジナルの画像サイズから、縮尺を取得
+                right_ankle_scale_orig_x = right_ankle_smoothed_center_x / orig_width
+                right_ankle_scale_orig_y = right_ankle_smoothed_center_y / orig_height
+
+                logger.debug("right_ankle_scale_orig_x: {0}, right_ankle_scale_orig_y: {1}".format(right_ankle_scale_orig_x, right_ankle_scale_orig_y))
+
+                # 縮尺を展開して、深度解析後の画像サイズに合わせる
+                right_ankle_pred_x = int(pred_width * right_ankle_scale_orig_x)
+                right_ankle_pred_y = int(pred_height * right_ankle_scale_orig_y)
+
+                logger.debug("right_ankle_pred_x: {0}, right_ankle_pred_y: {1}, depth: {2}".format(right_ankle_pred_x, right_ankle_pred_y, pred[0][right_ankle_pred_y][right_ankle_pred_x][0]))
+
+                # 左足首 ------------------------
+
+                # 左足首を取得する
+                left_ankle_smoothed_center_x = smoothed_2d[n][3][0]
+                left_ankle_smoothed_center_y = smoothed_2d[n][3][1]
+
+                logger.debug("left_ankle_smoothed_center_x: {0}, left_ankle_smoothed_center_y: {1}".format(left_ankle_smoothed_center_x, left_ankle_smoothed_center_y))
+
+                # オリジナルの画像サイズから、縮尺を取得
+                left_ankle_scale_orig_x = left_ankle_smoothed_center_x / orig_width
+                left_ankle_scale_orig_y = left_ankle_smoothed_center_y / orig_height
+
+                logger.debug("left_ankle_scale_orig_x: {0}, left_ankle_scale_orig_y: {1}".format(left_ankle_scale_orig_x, left_ankle_scale_orig_y))
+
+                # 縮尺を展開して、深度解析後の画像サイズに合わせる
+                left_ankle_pred_x = int(pred_width * left_ankle_scale_orig_x)
+                left_ankle_pred_y = int(pred_height * left_ankle_scale_orig_y)
+
+                logger.debug("left_ankle_pred_x: {0}, left_ankle_pred_y: {1}, depth: {2}".format(left_ankle_pred_x, left_ankle_pred_y, pred[0][left_ankle_pred_y][left_ankle_pred_x][0]))
+
+                # 出力 ------------------------
 
                 # 深度ファイルに出力
-                depthf.write("{0}, {1}\n".format(n, pred[0][pred_y][pred_x][0]))
+                depthf.write("{0}, {1}, {2}, {3}\n".format(n, pred[0][waist_pred_y][waist_pred_x][0], pred[0][right_ankle_pred_y][right_ankle_pred_x][0], pred[0][left_ankle_pred_y][left_ankle_pred_x][0]))
 
                 # Plot result
                 plt.cla()
@@ -144,7 +188,9 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d):
                 plt.colorbar(ii)
 
                 # 散布図のようにして、出力に使ったポイントを明示
-                plt.scatter(pred_x, pred_y, s=5, c="#FFFFFF")
+                plt.scatter(waist_pred_x, waist_pred_y, s=5, c="#FFFFFF")
+                plt.scatter(right_ankle_pred_x, right_ankle_pred_y, s=5, c="#FFFFFF")
+                plt.scatter(left_ankle_pred_x, left_ankle_pred_y, s=5, c="#FFFFFF")
 
                 # 深度画像保存
                 plotName = "{0}/depth_{1:012d}.png".format(subdir, n)
@@ -230,7 +276,11 @@ def load_smoothed_2d(smoothed_file):
                 # 右足付け根
                 [float(smoothed[16]), float(smoothed[17])], \
                 # 左足付け根
-                [float(smoothed[22]), float(smoothed[23])] \
+                [float(smoothed[22]), float(smoothed[23])], \
+                # 右足首
+                [float(smoothed[20]), float(smoothed[21])], \
+                # 左足首
+                [float(smoothed[26]), float(smoothed[27])] \
             ])
 
             n += 1
