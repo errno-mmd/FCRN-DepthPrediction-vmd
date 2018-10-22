@@ -21,7 +21,7 @@ level = {0:logging.ERROR,
             2:logging.INFO,
             3:logging.DEBUG}
 
-def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d):
+def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, start_frame):
     logger.info("深度推定出力開始")
 
     # 深度用サブディレクトリ
@@ -88,15 +88,23 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d):
             if flag == False:  # Is a frame left?
                 break
 
+            # 開始フレームより前は飛ばす
+            if start_frame - interval >= n:
+                n += 1
+                continue
+
             if n % interval == 0:
                 # 先に間引き分同じのを追加
-                if interval > 1 and n > 0:
+                if interval > 1 and n > start_frame:
                     for m in range(interval - 1):
                         # logger.debug("間引き分追加 {0}".format(m))
                         png_lib.append(imageio.imread("{0}/depth_{1:012d}.png".format(subdir, n - interval)))
 
                 # 一定間隔フレームおきにキャプチャした画像を深度推定する
                 logger.info("深度推定: n={0}".format(n))
+
+                # smoothedのindex
+                s_idx = n - start_frame
 
                 # キャプチャ画像を読み込む
                 img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -114,13 +122,13 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d):
                 pred_height = len(pred[0])
                 pred_width = len(pred[0][0])
 
-                logger.debug("smoothed_2d[n] {0}".format(smoothed_2d[n]))
+                logger.debug("smoothed_2d[s_idx] {0}".format(smoothed_2d[s_idx]))
 
                 # 腰 ------------------------
 
                 # 両足の付け根の中間を取得する
-                waist_smoothed_center_x = np.average([smoothed_2d[n][0][0], smoothed_2d[n][1][0]])
-                waist_smoothed_center_y = np.average([smoothed_2d[n][0][1], smoothed_2d[n][1][1]])
+                waist_smoothed_center_x = np.average([smoothed_2d[s_idx][0][0], smoothed_2d[s_idx][1][0]])
+                waist_smoothed_center_y = np.average([smoothed_2d[s_idx][0][1], smoothed_2d[s_idx][1][1]])
 
                 logger.debug("waist_smoothed_center_x: {0}, waist_smoothed_center_y: {1}".format(waist_smoothed_center_x, waist_smoothed_center_y))
 
@@ -139,8 +147,8 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d):
                 # 右足首 ------------------------
 
                 # 右足首を取得する
-                right_ankle_smoothed_center_x = smoothed_2d[n][2][0]
-                right_ankle_smoothed_center_y = smoothed_2d[n][2][1]
+                right_ankle_smoothed_center_x = smoothed_2d[s_idx][2][0]
+                right_ankle_smoothed_center_y = smoothed_2d[s_idx][2][1]
 
                 logger.debug("right_ankle_smoothed_center_x: {0}, right_ankle_smoothed_center_y: {1}".format(right_ankle_smoothed_center_x, right_ankle_smoothed_center_y))
 
@@ -159,8 +167,8 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d):
                 # 左足首 ------------------------
 
                 # 左足首を取得する
-                left_ankle_smoothed_center_x = smoothed_2d[n][3][0]
-                left_ankle_smoothed_center_y = smoothed_2d[n][3][1]
+                left_ankle_smoothed_center_x = smoothed_2d[s_idx][3][0]
+                left_ankle_smoothed_center_y = smoothed_2d[s_idx][3][1]
 
                 logger.debug("left_ankle_smoothed_center_x: {0}, left_ankle_smoothed_center_y: {1}".format(left_ankle_smoothed_center_x, left_ankle_smoothed_center_y))
 
@@ -288,7 +296,13 @@ def load_smoothed_2d(smoothed_file):
             line = sf.readline()
     
     return smoothed_2d
-                
+       
+# 開始フレームを取得
+def load_start_frame(start_frame_file):
+    n = 0
+    with open(start_frame_file, "r") as sf:
+        return int(sf.readline())
+
 def main():
     # Parse arguments
     parser = argparse.ArgumentParser()
@@ -304,11 +318,15 @@ def main():
     # 関節二次元データを取得
     smoothed_2d = load_smoothed_2d("{0}/smoothed.txt".format(args.baseline_path))
 
+    # 開始フレームインデックス
+    start_frame = load_start_frame("{0}/start_frame.txt".format(args.baseline_path))
+    logger.info("開始フレームインデックス: %d", start_frame)
+
     # 間隔は1以上の整数
     interval = args.interval if args.interval > 0 else 1
 
     # Predict the image
-    predict_video(args.model_path, args.video_path, args.baseline_path, interval, smoothed_2d)
+    predict_video(args.model_path, args.video_path, args.baseline_path, interval, smoothed_2d, start_frame)
 
 if __name__ == '__main__':
     main()
