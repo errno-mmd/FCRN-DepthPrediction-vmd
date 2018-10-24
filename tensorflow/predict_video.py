@@ -21,7 +21,7 @@ level = {0:logging.ERROR,
             2:logging.INFO,
             3:logging.DEBUG}
 
-def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, start_frame):
+def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, start_frame, verbose):
     logger.info("深度推定出力開始")
 
     # 深度用サブディレクトリ
@@ -94,11 +94,12 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, 
                 continue
 
             if n % interval == 0:
-                # 先に間引き分同じのを追加
-                if interval > 1 and n > start_frame:
-                    for m in range(interval - 1):
-                        # logger.debug("間引き分追加 {0}".format(m))
-                        png_lib.append(imageio.imread("{0}/depth_{1:012d}.png".format(subdir, n - interval)))
+                # 先に間引き分同じのを追加(間を埋める)
+                if level[verbose] <= logging.INFO:
+                    if interval > 1 and n > start_frame:
+                        for m in range(interval - 1):
+                            # logger.debug("間引き分追加 {0}".format(m))
+                            png_lib.append(imageio.imread("{0}/depth_{1:012d}.png".format(subdir, n - interval)))
 
                 # 一定間隔フレームおきにキャプチャした画像を深度推定する
                 logger.info("深度推定: n={0}".format(n))
@@ -189,38 +190,40 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, 
                 # 深度ファイルに出力
                 depthf.write("{0}, {1}, {2}, {3}\n".format(n, pred[0][waist_pred_y][waist_pred_x][0], pred[0][right_ankle_pred_y][right_ankle_pred_x][0], pred[0][left_ankle_pred_y][left_ankle_pred_x][0]))
 
-                # Plot result
-                plt.cla()
-                plt.clf()
-                ii = plt.imshow(pred[0,:,:,0], interpolation='nearest')
-                plt.colorbar(ii)
-
-                # 散布図のようにして、出力に使ったポイントを明示
-                plt.scatter(waist_pred_x, waist_pred_y, s=5, c="#FFFFFF")
-                plt.scatter(right_ankle_pred_x, right_ankle_pred_y, s=5, c="#FFFFFF")
-                plt.scatter(left_ankle_pred_x, left_ankle_pred_y, s=5, c="#FFFFFF")
-
                 # 深度画像保存
-                plotName = "{0}/depth_{1:012d}.png".format(subdir, n)
-                plt.savefig(plotName)
-                logger.debug("Save: {0}".format(plotName))
+                if level[verbose] <= logging.INFO:
+                    # Plot result
+                    plt.cla()
+                    plt.clf()
+                    ii = plt.imshow(pred[0,:,:,0], interpolation='nearest')
+                    plt.colorbar(ii)
 
-                # アニメーションGIF用に保持
-                png_lib.append(imageio.imread(plotName))
+                    # 散布図のようにして、出力に使ったポイントを明示
+                    plt.scatter(waist_pred_x, waist_pred_y, s=5, c="#FFFFFF")
+                    plt.scatter(right_ankle_pred_x, right_ankle_pred_y, s=5, c="#FFFFFF")
+                    plt.scatter(left_ankle_pred_x, left_ankle_pred_y, s=5, c="#FFFFFF")
 
-                plt.close()
+                    plotName = "{0}/depth_{1:012d}.png".format(subdir, n)
+                    plt.savefig(plotName)
+                    logger.debug("Save: {0}".format(plotName))
+
+                    # アニメーションGIF用に保持
+                    png_lib.append(imageio.imread(plotName))
+
+                    plt.close()
 
             n += 1
 
-    logger.info("creating Gif {0}/movie_depth.gif, please Wait!".format(baseline_path))
-    imageio.mimsave('{0}/movie_depth.gif'.format(baseline_path), png_lib, fps=30)
+    if level[verbose] <= logging.INFO:
+        logger.info("creating Gif {0}/movie_depth.gif, please Wait!".format(baseline_path))
+        imageio.mimsave('{0}/movie_depth.gif'.format(baseline_path), png_lib, fps=30)
 
     # 終わったら後処理
     cap.release()
     cv2.destroyAllWindows()
 
     logger.info("Done!!")
-    logger.info("深度推定結果: {0}".format(subdir))
+    logger.info("深度推定結果: {0}".format(baseline_path +'/depth.txt'))
 
 def predict(model_data_path, image_path):
 
@@ -326,7 +329,7 @@ def main():
     interval = args.interval if args.interval > 0 else 1
 
     # Predict the image
-    predict_video(args.model_path, args.video_path, args.baseline_path, interval, smoothed_2d, start_frame)
+    predict_video(args.model_path, args.video_path, args.baseline_path, interval, smoothed_2d, start_frame, args.verbose)
 
 if __name__ == '__main__':
     main()

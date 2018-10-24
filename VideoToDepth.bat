@@ -43,12 +43,17 @@ rem ---  詳細ログ有無
 echo --------------
 echo 詳細なログを出すか、yes か no を入力して下さい。
 echo 何も入力せず、ENTERを押下した場合、通常ログと深度推定GIFを出力します。
+echo warn と指定すると、アニメーションGIFも出力しません。（その分早いです）
 set VERBOSE=2
 set IS_DEBUG=no
-set /P IS_DEBUG="詳細ログ[yes/no]: "
+set /P IS_DEBUG="詳細ログ[yes/no/warn]: "
 
 IF /I "%IS_DEBUG%" EQU "yes" (
     set VERBOSE=3
+)
+
+IF /I "%IS_DEBUG%" EQU "warn" (
+    set VERBOSE=1
 )
 
 rem ---  python 実行
