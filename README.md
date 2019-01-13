@@ -33,6 +33,7 @@ python3系 で以下をインストールして下さい
 
 1. [miu200521358/3d-pose-baseline-vmd](https://github.com/miu200521358/3d-pose-baseline-vmd) で生成された2D関節データ (smoothed.txt) を用意する
 1. [VideoToDepth.bat](VideoToDepth.bat) を実行する
+	- [VideoToDepth_en.bat](VideoToDepth_en.bat) is in English. !! The logs remain in Japanese.
 1. `解析対象映像ファイルパス` が聞かれるので、動画のファイルフルパスを入力する
 1. `3D解析結果ディレクトリパス` が聞かれるので、1.の結果ディレクトリパスを指定する
 1. `深度推定間隔` が聞かれるので、深度推定を行うフレームの間隔(整数のみ)を指定する
@@ -45,7 +46,7 @@ python3系 で以下をインストールして下さい
 1. 処理が終了すると、1. の結果ディレクトリ以下に結果が出力される
     - depth.txt …　腰位置の深度推定値リスト
     - movie_depth.gif　…　深度推定の合成アニメーションGIF
-        - 白い点が腰位置として取得したポイントになる
+        - 白い点が腰、足首位置として取得したポイントになる
     - depth/depth_0000000000xx.png … 各フレームの深度推定結果
 
 ## ライセンス

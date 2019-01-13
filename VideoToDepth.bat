@@ -36,7 +36,7 @@ set DEPTH_INTERVAL=10
 echo 深度推定を行うフレームの間隔を数値で入力して下さい。
 echo 値が小さいほど、細かく深度推定を行います。（その分、時間がかかります）
 echo 何も入力せず、ENTERを押下した場合、「%DEPTH_INTERVAL%」間隔で処理します。
-set /P DEPTH_INTERVAL="深度推定間隔: "
+set /P DEPTH_INTERVAL="■深度推定間隔: "
 
 rem ---  詳細ログ有無
 
@@ -46,7 +46,7 @@ echo 何も入力せず、ENTERを押下した場合、通常ログと深度推定GIFを出力します。
 echo warn と指定すると、アニメーションGIFも出力しません。（その分早いです）
 set VERBOSE=2
 set IS_DEBUG=no
-set /P IS_DEBUG="詳細ログ[yes/no/warn]: "
+set /P IS_DEBUG="■詳細ログ[yes/no/warn]: "
 
 IF /I "%IS_DEBUG%" EQU "yes" (
     set VERBOSE=3
