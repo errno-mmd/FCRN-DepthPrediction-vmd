@@ -18,15 +18,15 @@ IF /I "%INPUT_VIDEO%" EQU "" (
     EXIT /B
 )
 
-rem ---  3d-pose-baseline-vmd解析結果JSONディレクトリパス
-echo 3d-pose-baseline-vmdの解析結果ディレクトリの絶対パスを入力して下さい。(3d_{実行日時}_idx00)
+rem ---  解析結果JSONディレクトリパス
+echo Openposeの解析結果のJSONディレクトリのフルパスを入力して下さい。({動画名}_json)
 echo この設定は半角英数字のみ設定可能で、必須項目です。
-set TARGET_BASELINE_DIR=
-set /P TARGET_BASELINE_DIR=■3D解析結果ディレクトリパス: 
-rem echo TARGET_DIR：%TARGET_DIR%
+set OPENPOSE_JSON=
+set /P OPENPOSE_JSON=■解析結果JSONディレクトリパス: 
+rem echo OPENPOSE_JSON：%OPENPOSE_JSON%
 
-IF /I "%TARGET_BASELINE_DIR%" EQU "" (
-    ECHO 3D解析結果ディレクトリパスが設定されていないため、処理を中断します。
+IF /I "%OPENPOSE_JSON%" EQU "" (
+    ECHO 解析結果JSONディレクトリパスが設定されていないため、処理を中断します。
     EXIT /B
 )
 
@@ -38,8 +38,27 @@ echo 値が小さいほど、細かく深度推定を行います。（その分、時間がかかります）
 echo 何も入力せず、ENTERを押下した場合、「%DEPTH_INTERVAL%」間隔で処理します。
 set /P DEPTH_INTERVAL="■深度推定間隔: "
 
-rem ---  詳細ログ有無
+rem ---  反転フレームリスト
+echo --------------
+set REVERSE_FRAME_LIST=
+echo Openposeが誤認識して反転しているフレーム番号(0始まり)を指定してください。
+echo ここで指定された番号のフレームに対して、反転判定を行い、反転認定された場合、関節位置が反転されます。
+echo カンマで複数件指定可能です。また、ハイフンで範囲が指定可能です。
+echo 例）4,10-12　…　4,10,11,12 が反転判定対象フレームとなります。
+set /P REVERSE_FRAME_LIST="■反転フレームリスト: "
 
+rem ---  順番指定リスト
+echo --------------
+set ORDER_SPECIFIC_LIST=
+echo 複数人数トレースで、交差後の人物INDEX順番を指定してください。
+echo フォーマット：［＜フレーム番号＞:左から0番目にいる人物のインデックス,左から1番目…］
+echo 人物インデックスは、Openposeの出力結果JSONの出力順に対応しています。
+echo 例）[10:1,0]　…　10F目は、左から1番目の人物、0番目の人物の順番に並べ替えます。
+echo [10:1,0][30:0,1]のように、カッコ単位で複数件指定可能です。
+echo 例）[10-15:1,0][30:0,1]　…　10～15F目: 1, 0の順番、30F目: 0, 1の順番。
+set /P ORDER_SPECIFIC_LIST="■順番指定リスト: "
+
+rem ---  詳細ログ有無
 echo --------------
 echo 詳細なログを出すか、yes か no を入力して下さい。
 echo 何も入力せず、ENTERを押下した場合、通常ログと深度推定GIFを出力します。
@@ -57,6 +76,6 @@ IF /I "%IS_DEBUG%" EQU "warn" (
 )
 
 rem ---  python 実行
-python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --baseline_path %TARGET_BASELINE_DIR% --interval %DEPTH_INTERVAL% --verbose %VERBOSE%
+python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_frames "%REVERSE_FRAME_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --verbose %VERBOSE%
 
 

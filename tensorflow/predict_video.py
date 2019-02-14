@@ -12,27 +12,36 @@ import re
 import shutil
 import imageio
 import models
+import json
+import copy
+import sys
+from collections import Counter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ファイル出力ログ用
+file_logger = logging.getLogger("message")
 
 level = {0:logging.ERROR,
             1:logging.WARNING,
             2:logging.INFO,
             3:logging.DEBUG}
 
-def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, start_frame, verbose):
-    logger.info("深度推定出力開始")
 
+def predict_video(now_str, model_path, video_path, depth_path, interval, openpose_output_dir, openpose_2d, openpose_filenames, start_frame, reverse_frame_dict, order_specific_dict, verbose):
     # 深度用サブディレクトリ
-    subdir = '{0}/depth'.format(baseline_path)
+    subdir = '{0}/depth'.format(depth_path)
     if os.path.exists(subdir):
         # 既にディレクトリがある場合、一旦削除
         shutil.rmtree(subdir)
     os.makedirs(subdir)
 
-    #関節位置情報ファイル
-    depthf = open(baseline_path +'/depth.txt', 'w')
+    # ファイル用ログの出力設定
+    log_file_path = '{0}/message.log'.format(depth_path)
+    logger.debug(log_file_path)
+    file_logger.addHandler(logging.FileHandler(log_file_path))
+    file_logger.warn("深度推定出力開始 now: %s ---------------------------", now_str)
 
     # Default input size
     height = 288
@@ -41,8 +50,8 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, 
     batch_size = 1
     scale = 0
 
-    # # tensorflowをリセットする
-    # tf.reset_default_graph()
+    # tensorflowをリセットする
+    tf.reset_default_graph()
 
     # 映像サイズを取得する
     n = 0
@@ -78,34 +87,58 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, 
         saver = tf.train.Saver()     
         saver.restore(sess, model_path)
 
+        # 人数分の深度データ
+        pred_multi_ary = [[[] for y in range(len(openpose_2d[0])) ] for x in range(len(openpose_2d))]
+        # 人数
+        people_size = len(openpose_2d[0])
+        # 並べ直したindex用配列
+        sorted_idxs = [[-1 for y in range(people_size)] for x in range(len(openpose_filenames))]
+        # 並べ直したindex用配列反転有無
+        is_all_reverses = [[False for y in range(people_size)] for x in range(len(openpose_filenames))]
+        # 並べ直したindex用配列反転有無(上半身のみ)
+        is_upper_reverses = [[False for y in range(people_size)] for x in range(len(openpose_filenames))]
+        # 並べ直したindex用配列反転有無(下半身のみ)
+        is_lower_reverses = [[False for y in range(people_size)] for x in range(len(openpose_filenames))]
+        # 現在反転中か否か(上半身)
+        is_now_upper_reversed = [False for y in range(people_size)]
+        # 現在反転中か否か(下半身)
+        is_now_lower_reversed = [False for y in range(people_size)]
+
+        # 基準となる深度(1人目の0F目平均値)
+        base_depth = 0.0
+
         # 動画を1枚ずつ画像に変換する
-        n = 0
+        cnt = 0
         cap = cv2.VideoCapture(video_path)
         while(cap.isOpened()):
             # 動画から1枚キャプチャして読み込む
             flag, frame = cap.read()  # Capture frame-by-frame
-            # キャプチャが終わっていたら終了
-            if flag == False:  # Is a frame left?
-                break
+
+            # logger.debug("start_frame: %s, n: %s, len(openpose_2d): %s", start_frame, n, len(openpose_2d))
+
+            # 深度推定のindex
+            _idx = cnt - start_frame
+            _display_idx = cnt - interval
 
             # 開始フレームより前は飛ばす
-            if start_frame - interval >= n:
-                n += 1
+            if start_frame > cnt:
+                cnt += 1
                 continue
 
-            if n % interval == 0:
+            # 終わったフレームより後は飛ばす
+            if _idx >= len(openpose_2d) + interval:
+                break
+
+            if flag == True and ((_idx % interval == 0 and _idx < len(openpose_2d)) or ( _idx == len(openpose_2d) -1 )):
                 # 先に間引き分同じのを追加(間を埋める)
-                if level[verbose] <= logging.INFO:
-                    if interval > 1 and n > start_frame:
+                if _idx % interval == 0 and level[verbose] <= logging.INFO and interval > 1 and cnt > start_frame:
                         for m in range(interval - 1):
                             # logger.debug("間引き分追加 {0}".format(m))
-                            png_lib.append(imageio.imread("{0}/depth_{1:012d}.png".format(subdir, n - interval)))
+                            png_lib.append(imageio.imread("{0}/depth_{1:012d}.png".format(subdir, _display_idx)))
 
                 # 一定間隔フレームおきにキャプチャした画像を深度推定する
-                logger.info("深度推定: n={0}".format(n))
-
-                # smoothedのindex
-                s_idx = n - start_frame
+                if _idx % (interval * 10) == 0:
+                    logger.info("深度推定 idx: %s(%s)", _idx, cnt)
 
                 # キャプチャ画像を読み込む
                 img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -123,74 +156,107 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, 
                 pred_height = len(pred[0])
                 pred_width = len(pred[0][0])
 
-                logger.debug("smoothed_2d[s_idx] {0}".format(smoothed_2d[s_idx]))
+                # logger.debug("openpose_2d[_idx] {0}".format(openpose_2d[_idx]))
 
-                # 腰 ------------------------
+                # 深度散布図用リスト
+                pred_multi_xys = [[] for x in range(people_size) ]
 
-                # 両足の付け根の中間を取得する
-                waist_smoothed_center_x = np.average([smoothed_2d[s_idx][0][0], smoothed_2d[s_idx][1][0]])
-                waist_smoothed_center_y = np.average([smoothed_2d[s_idx][0][1], smoothed_2d[s_idx][1][1]])
+                # 1フレーム分のデータ
+                for xy_idx, one_xy_2d in enumerate(openpose_2d[_idx]):
+                    # 深度リスト
+                    pred_ary = []
+                    pred_xy = []
 
-                logger.debug("waist_smoothed_center_x: {0}, waist_smoothed_center_y: {1}".format(waist_smoothed_center_x, waist_smoothed_center_y))
+                    # 一人分のデータ
+                    for n_idx in range(len(one_xy_2d)):
+                        # 関節位置を取得する
+                        openpose_x = openpose_2d[_idx][xy_idx][n_idx][0]
+                        openpose_y = openpose_2d[_idx][xy_idx][n_idx][1]
 
-                # オリジナルの画像サイズから、縮尺を取得
-                waist_scale_orig_x = waist_smoothed_center_x / orig_width
-                waist_scale_orig_y = waist_smoothed_center_y / orig_height
+                        # logger.debug("s: %s, xy: %s, n: %s, openpose_x: %s, openpose_y: %s", _idx, xy_idx, n_idx, openpose_x, openpose_y)
 
-                logger.debug("waist_scale_orig_x: {0}, waist_scale_orig_y: {1}".format(waist_scale_orig_x, waist_scale_orig_y))
+                        # if openpose_x < 0 and openpose_y < 0:
+                        #     if _idx > 0 and _idx % interval == 0:
+                        #         # 信頼度が足りず、あり得ない値が設定されている場合、
+                        #         # intevalの範囲内で関節位置が信頼できるものになるまで遡る
+                        #         p_idx = 0
+                        #         while openpose_x <= 0 and openpose_y <= 0 and _idx > p_idx:
+                        #             p_idx += 1
 
-                # 縮尺を展開して、深度解析後の画像サイズに合わせる
-                waist_pred_x = int(pred_width * waist_scale_orig_x)
-                waist_pred_y = int(pred_height * waist_scale_orig_y)
+                        #             if p_idx >= interval:
+                        #                 break
 
-                logger.debug("waist_pred_x: {0}, waist_pred_y: {1}, depth: {2}".format(waist_pred_x, waist_pred_y, pred[0][waist_pred_y][waist_pred_x][0]))
+                        #             # 関節位置を取得する
+                        #             openpose_x = openpose_2d[_idx - p_idx][sorted_idxs[_idx - p_idx][xy_idx]][n_idx][0]
+                        #             openpose_y = openpose_2d[_idx - p_idx][sorted_idxs[_idx - p_idx][xy_idx]][n_idx][1]
 
-                # 右足首 ------------------------
+                        #         # logger.debug("pred_multi_ary: %s", pred_multi_ary)
+                        #         # logger.debug("_idx:%s, xy_idx: %s, n_idx: %s, sorted: %s, len(pred_multi_ary):%s", _idx, xy_idx, n_idx, sorted_idxs[_idx - p_idx][xy_idx], len(pred_multi_ary[_idx - p_idx][sorted_idxs[_idx - p_idx][xy_idx]]))
 
-                # 右足首を取得する
-                right_ankle_smoothed_center_x = smoothed_2d[s_idx][2][0]
-                right_ankle_smoothed_center_y = smoothed_2d[s_idx][2][1]
+                        #         # pred_ary.append(copy.deepcopy(pred_multi_ary[_idx - p_idx][sorted_idxs[_idx - p_idx][xy_idx]][n_idx]))
 
-                logger.debug("right_ankle_smoothed_center_x: {0}, right_ankle_smoothed_center_y: {1}".format(right_ankle_smoothed_center_x, right_ankle_smoothed_center_y))
+                        #         # # 信頼度が足りず、あり得ない値が設定されている場合、一つ前のをチェックする
+                        #         # if openpose_x <= 0 and openpose_y <= 0:
+                        #         #     # 関節位置を取得する
+                        #         #     openpose_x = openpose_2d[_idx - 1][sorted_idxs[_idx - 1][xy_idx]][n_idx][0]
+                        #         #     openpose_y = openpose_2d[_idx - 1][sorted_idxs[_idx - 1][xy_idx]][n_idx][1]
 
-                # オリジナルの画像サイズから、縮尺を取得
-                right_ankle_scale_orig_x = right_ankle_smoothed_center_x / orig_width
-                right_ankle_scale_orig_y = right_ankle_smoothed_center_y / orig_height
+                        #         # logger.debug("pred_multi_ary: %s", pred_multi_ary)
+                        #         logger.debug("_idx:%s, xy_idx: %s, n_idx: %s, sorted: %s, len(pred_multi_ary):%s", _idx, xy_idx, n_idx, sorted_idxs[_idx - 1][xy_idx], len(pred_multi_ary[_idx - 1][sorted_idxs[_idx - 1][xy_idx]]))
 
-                logger.debug("right_ankle_scale_orig_x: {0}, right_ankle_scale_orig_y: {1}".format(right_ankle_scale_orig_x, right_ankle_scale_orig_y))
+                        if openpose_x > 0 and openpose_y > 0:
+                            # 信頼度が足りている場合、縮尺に応じた深度を取得
 
-                # 縮尺を展開して、深度解析後の画像サイズに合わせる
-                right_ankle_pred_x = int(pred_width * right_ankle_scale_orig_x)
-                right_ankle_pred_y = int(pred_height * right_ankle_scale_orig_y)
+                            # オリジナルの画像サイズから、縮尺を取得
+                            scale_orig_x = openpose_x / orig_width
+                            scale_orig_y = openpose_y / orig_height
 
-                logger.debug("right_ankle_pred_x: {0}, right_ankle_pred_y: {1}, depth: {2}".format(right_ankle_pred_x, right_ankle_pred_y, pred[0][right_ankle_pred_y][right_ankle_pred_x][0]))
+                            # logger.debug("s: %s, n: %s, scale_orig_x: %s, scale_orig_y: %s", _idx, n_idx, scale_orig_x, scale_orig_y)
 
-                # 左足首 ------------------------
+                            # 縮尺を展開して、深度解析後の画像サイズに合わせる
+                            pred_x = int(pred_width * scale_orig_x)
+                            pred_y = int(pred_height * scale_orig_y)
+                            # logger.debug("s: %s, n: %s, pred_x: %s, pred_y: %s, len(pred[0]): %s", _idx, n_idx, pred_x, pred_y, len(pred))
 
-                # 左足首を取得する
-                left_ankle_smoothed_center_x = smoothed_2d[s_idx][3][0]
-                left_ankle_smoothed_center_y = smoothed_2d[s_idx][3][1]
+                            depth = pred[0][pred_y][pred_x][0]
 
-                logger.debug("left_ankle_smoothed_center_x: {0}, left_ankle_smoothed_center_y: {1}".format(left_ankle_smoothed_center_x, left_ankle_smoothed_center_y))
+                            # logger.debug("s: %s, n: %s, pred_x: %s, pred_y: %s, depth: %s", _idx, n_idx, pred_x, pred_y, depth)
 
-                # オリジナルの画像サイズから、縮尺を取得
-                left_ankle_scale_orig_x = left_ankle_smoothed_center_x / orig_width
-                left_ankle_scale_orig_y = left_ankle_smoothed_center_y / orig_height
+                            pred_ary.append(depth)
+                            pred_xy.append([pred_x, pred_y])
+                        else:
+                            # 信頼度がどうしても足りない場合、0設定
+                            pred_ary.append(0)
 
-                logger.debug("left_ankle_scale_orig_x: {0}, left_ankle_scale_orig_y: {1}".format(left_ankle_scale_orig_x, left_ankle_scale_orig_y))
+                    # logger.debug("pred_ary: %s", pred_ary)
+                    pred_multi_ary[_idx][xy_idx] = pred_ary
+                    # logger.debug("pred_multi_ary: %s", pred_multi_ary)
+                    pred_multi_xys[xy_idx] = pred_xy
 
-                # 縮尺を展開して、深度解析後の画像サイズに合わせる
-                left_ankle_pred_x = int(pred_width * left_ankle_scale_orig_x)
-                left_ankle_pred_y = int(pred_height * left_ankle_scale_orig_y)
+                    if xy_idx == 0 and _idx == 0:
+                        # 1人目の0F目の場合、基準深度として平均値を保存
+                        # 深度0が含まれていると狂うので、ループしてチェックしつつ合算
+                        pred_sum = 0
+                        pred_cnt = 0
+                        for pred_one in pred_ary:
+                            if pred_one > 0:
+                                pred_sum += pred_one
+                                pred_cnt += 1
 
-                logger.debug("left_ankle_pred_x: {0}, left_ankle_pred_y: {1}, depth: {2}".format(left_ankle_pred_x, left_ankle_pred_y, pred[0][left_ankle_pred_y][left_ankle_pred_x][0]))
+                        base_depth = pred_sum / pred_cnt
 
-                # 出力 ------------------------
+                        logger.debug("基準深度取得: base_depth: %s, pred_sum: %s, pred_cnt: %s", base_depth, pred_sum, pred_cnt )
 
-                # 深度ファイルに出力
-                depthf.write("{0}, {1}, {2}, {3}\n".format(n, pred[0][waist_pred_y][waist_pred_x][0], pred[0][right_ankle_pred_y][right_ankle_pred_x][0], pred[0][left_ankle_pred_y][left_ankle_pred_x][0]))
+                # # 0F目は算出後の深度を改めて減算
+                # if _idx == 0:
+                #     for pred_one_ary in pred_multi_ary[_idx]:
+                #         for pred_one_idx, pred_one in enumerate(pred_one_ary):
+                #             if pred_one > 0:
+                #                 pred_one_ary[pred_one_idx] = pred_one_ary[pred_one_idx] - base_depth
+                    
+                #     logger.debug("0F目深度: %s", pred_multi_ary[_idx])
 
-                # 深度画像保存
+                # 深度画像保存 -----------------------
                 if level[verbose] <= logging.INFO:
                     # Plot result
                     plt.cla()
@@ -199,11 +265,11 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, 
                     plt.colorbar(ii)
 
                     # 散布図のようにして、出力に使ったポイントを明示
-                    plt.scatter(waist_pred_x, waist_pred_y, s=5, c="#FFFFFF")
-                    plt.scatter(right_ankle_pred_x, right_ankle_pred_y, s=5, c="#FFFFFF")
-                    plt.scatter(left_ankle_pred_x, left_ankle_pred_y, s=5, c="#FFFFFF")
+                    for pred_xy, color in zip(pred_multi_xys, ["#FFFFFF", "#FF0000", "#00FF00", "#0000FF", "#FF3333", "#33FF33", "#3333FF", "#FF6666", "#66FF66", "#6666FF", "#FF9999", "#99FF99", "#9999FF"]):
+                        for xy in pred_xy:
+                            plt.scatter(xy[0], xy[1], s=5, c=color)
 
-                    plotName = "{0}/depth_{1:012d}.png".format(subdir, n)
+                    plotName = "{0}/depth_{1:012d}.png".format(subdir, cnt)
                     plt.savefig(plotName)
                     logger.debug("Save: {0}".format(plotName))
 
@@ -212,22 +278,1080 @@ def predict_video(model_path, video_path, baseline_path, interval, smoothed_2d, 
 
                     plt.close()
 
-            n += 1
+            # 人体別処理用インデックス（深度補間を有効にするため、一区切り前のを使用する）
+            _iidx = _idx - interval
+
+            if _iidx < 0:
+                # まだ処理インデックスが開始してない場合、スキップ
+                cnt += 1
+                continue
+
+            logger.debug("人体別処理: idx: %s, iidx: %s cnt: %s ------------------------------", _idx, _iidx, _display_idx)
+
+            # JSONファイルを読み直す
+            _file = os.path.join(openpose_output_dir, openpose_filenames[_iidx])
+            if not os.path.isfile(_file): raise Exception("No file found!!, {0}".format(_file))
+            data = json.load(open(_file))
+
+            # 人数を計算
+            _len = len(data["people"])
+
+            # logger.debug("pred_multi_ary: %s", pred_multi_ary)
+
+            # インデックス並び替え -------------------------
+            # 開始時
+            if _iidx == 0:
+                # 前回のXYを保持
+                past_data = data["people"]
+
+                # 最初は左から順番に0番目,1番目と並べる
+                first_sorted_idxs = sort_first_idxs(data["people"])
+
+                for pidx in range(_len):
+                    # 最初はインデックスの通りに並べる
+                    sorted_idxs[0][pidx] = pidx
+
+                past_depth_idx = -1
+                next_depth_idx = -1
+            else:
+                if len(data["people"]) <= 0:
+                    logger.info("今回データなしの為、前回ソート順流用 _iidx: %s(%s)", _iidx, _display_idx)
+                    sorted_idxs[_iidx], is_all_reverses[_iidx], is_upper_reverses[_iidx], is_lower_reverses[_iidx] = copy.deepcopy(sorted_idxs[_iidx - 1]), copy.deepcopy(is_all_reverses[_iidx - 1]), copy.deepcopy(is_upper_reverses[_iidx]), copy.deepcopy(is_lower_reverses[_iidx])
+                else:
+                    if _iidx in order_specific_dict:
+                        # 順番指定リストに該当フレームがある場合
+                        for key_idx, person_idx in enumerate(order_specific_dict[_iidx]):
+                            # Openposeのデータの順番に応じたソート順を指定する
+                            sorted_idxs[_iidx][key_idx] = person_idx
+                            # 反転はさせない
+                            is_all_reverses[_iidx][key_idx] = False
+                            is_upper_reverses[_iidx][key_idx] = False
+                            is_lower_reverses[_iidx][key_idx] = False
+                            # logger.info("_iidx: %s, _display_idx: %s, key_idx: %s, person_idx: %s", _iidx, _display_idx, key_idx, person_idx )
+                        
+                        file_logger.warn("※※{0:05d}F目 順番指定あり {1}".format( _iidx, order_specific_dict[_iidx]))
+                        # logger.info("_iidx: %s, _display_idx: %s, sorted_idxs[_iidx]: %s", _iidx, _display_idx, sorted_idxs[_iidx] )
+                    else:
+                        # 前回の深度
+                        past_depth_idx = _iidx - ( _iidx % interval )
+                        # 次回の深度
+                        next_depth_idx = _iidx + interval - ( _iidx % interval )
+                        if next_depth_idx >= len(openpose_2d):
+                            # 最後は同じ値をnextとして見る
+                            next_depth_idx = len(openpose_2d) - 1
+
+                        # 前回のXYと深度から近いindexを算出
+                        sorted_idxs[_iidx], is_all_reverses[_iidx], is_upper_reverses[_iidx], is_lower_reverses[_iidx] = calc_nearest_idxs(sorted_idxs[_iidx - 1], past_data, data["people"], pred_multi_ary[past_depth_idx], pred_multi_ary[next_depth_idx])
+
+            logger.debug("＊＊_iidx: %s(%s), past_depth_idx: %s, next_depth_idx: %s, sorted_idxs: %s, all: %s, upper: %s, lower: %s", _iidx, _display_idx, past_depth_idx, next_depth_idx, sorted_idxs[_iidx], is_all_reverses[_iidx], is_upper_reverses[_iidx], is_lower_reverses[_iidx])
+            
+            # 首の位置が一番よく取れてるので、首のX位置を出力する
+            display_nose_pos = {}
+            for _pidx in range(len(data["people"])):
+                display_nose_pos[sorted_idxs[_iidx][_pidx]] = [data["people"][_pidx]["pose_keypoints_2d"][1*3], data["people"][_pidx]["pose_keypoints_2d"][1*3+1]]
+
+            file_logger.warn("＊＊{0:05d}F目の出力順番: [{1}:{2}], 位置: {3}".format(_iidx, _iidx, ','.join(map(str, sorted_idxs[_iidx])), sorted(display_nose_pos.items()) ))
+
+            # 現在データ
+            now_data = [[] for x in range(people_size) ]
+
+            # インデックス出力 ------------------------------
+            if _len <= 0:
+                logger.debug("空データ出力 %s %s", _iidx, _len)
+                # まったくデータがない場合、空データを投入する
+                for pidx in range(people_size):
+                    # 一旦空データを読む
+                    outputdata = json.load(open("tensorflow/json/empty_keypoints.json"))
+
+                    # インデックス対応分のディレクトリ作成
+                    idx_path = '{0}/{1}_{3}_idx{2:02d}/json/{4}'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str, openpose_filenames[_iidx])
+                    os.makedirs(os.path.dirname(idx_path), exist_ok=True)
+                            
+                    # 出力
+                    # json.dump(data, open(idx_path,'w'), indent=4)
+                    json.dump(outputdata, open(idx_path,'w'))
+
+                    if _iidx == 0 or _iidx % interval == 0:
+                        # 深度データ
+                        depth_path = '{0}/{1}_{3}_idx{2:02d}/depth.txt'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str)
+                        # 追記モードで開く
+                        depthf = open(depth_path, 'a')
+                        pred_ary = [ str(0) for x in range(18) ]
+                        # 一行分を追記
+                        depthf.write("{0}, {1}\n".format(_iidx, ','.join(pred_ary)))
+                        depthf.close()
+
+                    now_data[pidx] = outputdata
+            else:
+                # 何らかのデータがある場合
+                for pidx in range(_len):
+                    # 一旦空データを読む
+                    outputdata = json.load(open("tensorflow/json/empty_keypoints.json"))
+
+                    # 出力対象となるpeople内のINDEX
+                    sidx = sorted_idxs[_iidx][pidx]
+
+                    targetdata = data["people"][sidx]["pose_keypoints_2d"]
+
+                    # 出力対象となるpeople内のINDEX反転有無
+                    is_all_reverse = is_all_reverses[_iidx][pidx]
+                    # 上半身反転有無
+                    is_upper_reverse = is_upper_reverses[_iidx][pidx]
+                    # 下半身反転有無
+                    is_lower_reverse = is_lower_reverses[_iidx][pidx]
+
+                    if _iidx in reverse_frame_dict:
+                        logger.debug("反転判定対象フレーム: %s(%s)", _iidx, _display_idx)
+                        if is_upper_reverse:
+                            # 出力対象が反転の場合、現在の状態から反転させる(上半身)
+                            is_now_upper_reversed[pidx] = not(is_now_upper_reversed[pidx])
+
+                        if is_lower_reverse:
+                            # 出力対象が反転の場合、現在の状態から反転させる(下半身)
+                            is_now_lower_reversed[pidx] = not(is_now_lower_reversed[pidx])
+                        
+                        if is_all_reverse:
+                            # 全身反転の場合
+                            if is_now_upper_reversed[pidx] != is_now_lower_reversed[pidx]:
+                                # 上半身と下半身で反転が違う場合、反転クリア
+                                is_now_upper_reversed[pidx] = False
+                                is_now_lower_reversed[pidx] = False
+                            else:
+                                # 反転状況が同じ場合は、そのまま反転
+                                is_now_upper_reversed[pidx] = not(is_now_upper_reversed[pidx])
+                                is_now_lower_reversed[pidx] = not(is_now_lower_reversed[pidx])
+                    else:
+                        # 反転対象外の場合、クリア
+                        is_now_upper_reversed[pidx] = False
+                        is_now_lower_reversed[pidx] = False
+                        
+                    logger.debug("is_now_upper_reversed: %s, is_now_lower_reversed: %s", is_now_upper_reversed, is_now_lower_reversed)
+
+                    # トレース失敗の場合、クリア
+                    if (is_all_reverse == False and (is_upper_reverse or (is_upper_reverse == False and is_now_upper_reversed[pidx] ))) and (targetdata[2*3] == 0 or targetdata[3*3] == 0 or targetdata[5*3] == 0 or targetdata[6*3] == 0) :
+                        logger.debug("上半身ひじまでのトレース失敗のため、上半身反転フラグクリア %s(%s) data: %s", _iidx, _display_idx, targetdata)
+                        is_upper_reverses[_iidx][pidx] = False
+                        is_now_upper_reversed[pidx] = False
+
+                    if (is_all_reverse == False or (is_lower_reverse or (is_lower_reverse == False and is_now_lower_reversed[pidx] ))) and (targetdata[8*3] == 0 or targetdata[9*3] == 0 or targetdata[11*3] == 0 or targetdata[12*3] == 0) :
+                        logger.debug("下半身ひざまでのトレース失敗のため、下半身反転フラグクリア %s(%s) data: %s", _iidx, _display_idx, targetdata)
+                        is_lower_reverses[_iidx][pidx] = False
+                        is_now_lower_reversed[pidx] = False
+
+                    logger.debug("is_now_upper_reversed: %s, is_now_lower_reversed: %s", is_now_upper_reversed, is_now_lower_reversed)
+
+                    logger.debug("_iidx: %s(%s), sidx: %s, pidx: %s, upper: %s, lower: %s", _iidx, _display_idx, sidx, pidx, is_now_upper_reversed[pidx], is_now_lower_reversed[pidx])
+
+                    if _iidx in reverse_frame_dict:
+                        if is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx]:
+                            file_logger.warn("※※{0:05d}F目 {1}番目の人物、全身反転 [{2}:{3}]".format( _iidx, first_sorted_idxs[pidx], _iidx, first_sorted_idxs[pidx]))
+                        elif is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx] == False :
+                            file_logger.warn("※※{0:05d}F目 {1}番目の人物、上半身反転 [{2}:{3}]".format( _iidx, first_sorted_idxs[pidx], _iidx, first_sorted_idxs[pidx]))
+                        elif is_now_upper_reversed[pidx] == False and is_now_lower_reversed[pidx]:
+                            file_logger.warn("※※{0:05d}F目 {1}番目の人物、下半身反転 [{2}:{3}]".format( _iidx, first_sorted_idxs[pidx], _iidx, first_sorted_idxs[pidx]))
+
+                    for o in range(0,len(outputdata["people"][0]["pose_keypoints_2d"]),3):
+                        if is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx]:
+                            # 反転している場合、反転INDEX(全身)
+                            outputdata["people"][0]["pose_keypoints_2d"][o] = targetdata[OPENPOSE_REVERSE_ALL[int(o/3)]*3]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+1] = targetdata[OPENPOSE_REVERSE_ALL[int(o/3)]*3+1]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+2] = targetdata[OPENPOSE_REVERSE_ALL[int(o/3)]*3+2]
+                            # logger.debug("全反: o: %s, revo: %s, org: %s, rev: %s", o, OPENPOSE_REVERSE_ALL[int(o/3)]*3, targetdata[o], targetdata[OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+                        elif is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx] == False :
+                            # logger.debug("反: %s", data["people"][sidx]["pose_keypoints_2d"][OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+                            # 反転している場合、反転INDEX(上半身)
+                            outputdata["people"][0]["pose_keypoints_2d"][o] = targetdata[OPENPOSE_REVERSE_UPPER[int(o/3)]*3]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+1] = targetdata[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+1]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+2] = targetdata[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+2]
+                            # logger.debug("上反: o: %s, revo: %s, org: %s, rev: %s", o, OPENPOSE_REVERSE_UPPER[int(o/3)]*3, targetdata[o], targetdata[OPENPOSE_REVERSE_UPPER[int(o/3)]*3])
+                        elif is_now_upper_reversed[pidx] == False and is_now_lower_reversed[pidx]:
+                            # logger.debug("反: %s", data["people"][sidx]["pose_keypoints_2d"][OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+                            # 反転している場合、反転INDEX(下半身)
+                            outputdata["people"][0]["pose_keypoints_2d"][o] = targetdata[OPENPOSE_REVERSE_LOWER[int(o/3)]*3]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+1] = targetdata[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+1]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+2] = targetdata[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+2]
+                            # logger.debug("下反: o: %s, revo: %s, org: %s, rev: %s", o, OPENPOSE_REVERSE_LOWER[int(o/3)]*3, targetdata[o], targetdata[OPENPOSE_REVERSE_LOWER[int(o/3)]*3])
+                        else:
+                            # logger.debug("正: %s", data["people"][sidx]["pose_keypoints_2d"][o])
+                            outputdata["people"][0]["pose_keypoints_2d"][o] = targetdata[o]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+1] = targetdata[o+1]
+                            outputdata["people"][0]["pose_keypoints_2d"][o+2] = targetdata[o+2]
+
+                    logger.debug("outputdata %s", outputdata["people"][0]["pose_keypoints_2d"])
+
+                    # インデックス対応分のディレクトリ作成
+                    idx_path = '{0}/{1}_{3}_idx{2:02d}/json/{4}'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str, openpose_filenames[_iidx])
+                    os.makedirs(os.path.dirname(idx_path), exist_ok=True)
+                            
+                    # 出力
+                    # json.dump(data, open(idx_path,'w'), indent=4)
+                    json.dump(outputdata, open(idx_path,'w'), indent=4)
+
+                    if _iidx % interval == 0:
+                        # 深度データ
+                        depth_path = '{0}/{1}_{3}_idx{2:02d}/depth.txt'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str)
+                        # 追記モードで開く
+                        depthf = open(depth_path, 'a')
+                        # 深度データを文字列化する
+                        # logger.debug("pred_multi_ary[_idx]: %s", pred_multi_ary[_idx])
+                        # logger.debug("pred_multi_ary[_idx][sidx]: %s", pred_multi_ary[_idx][sidx])
+                        pred_str_ary = []
+                        if is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx]:
+                            # 反転している場合、反転INDEX
+                            for _oidx, o in enumerate(pred_multi_ary[_iidx][sidx]):
+                                pred_multi_ary[_iidx][sidx][_oidx] = pred_multi_ary[_iidx][sidx][OPENPOSE_REVERSE_ALL[_oidx]]
+                        elif is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx] == False:
+                            # 反転している場合、反転INDEX(上半身)
+                            for _oidx, o in enumerate(pred_multi_ary[_iidx][sidx]):
+                                pred_multi_ary[_iidx][sidx][_oidx] = pred_multi_ary[_iidx][sidx][OPENPOSE_REVERSE_UPPER[_oidx]]
+                        elif is_now_upper_reversed[pidx] == False and is_now_lower_reversed[pidx]:
+                            # 反転している場合、反転INDEX(上半身)
+                            for _oidx, o in enumerate(pred_multi_ary[_iidx][sidx]):
+                                pred_multi_ary[_iidx][sidx][_oidx] = pred_multi_ary[_iidx][sidx][OPENPOSE_REVERSE_LOWER[_oidx]]
+
+                        pred_str_ary = [ str(x - base_depth) for x in pred_multi_ary[_iidx][sidx] ]
+
+                        # 一行分を追記
+                        depthf.write("{0}, {1}\n".format(_display_idx, ','.join(pred_str_ary)))
+                        depthf.close()
+
+                    # 現在データを保持
+                    now_data[pidx] = data["people"][sidx]
+
+            if _iidx > 0:
+                if len(data["people"]) <= 0:
+                    # まったくデータが無い場合、前々回のデータをそのまま流用する(上書きしない)
+                    logger.debug("過去データなしの為、前々回データ流用")
+                    pass
+                else:
+                    # # 出力し終わったら、過去データとして保持する
+                    # for pidx in range(_len):
+                    #     for joint in [[0], [1], [2,3,4],[5,6,7], [8,9,10],[11,12,13], [14,16],[15,17]]:
+                    #         is_none_zero = False
+                    #         # 関節の繋がり
+                    #         for j in joint:
+                    #             o = j * 3
+                    #             if now_data[pidx]["pose_keypoints_2d"][o] != 0 or now_data[pidx]["pose_keypoints_2d"][o+1] != 0:
+                    #                 is_none_zero = True
+                    #                 break
+
+                    #         # すべての関節が0の場合
+                    #         if is_none_zero == False:
+                    #             for j in joint:
+                    #                 o = j * 3
+                    #                 logger.debug("過去PU: pidx: %s, j: %s, o: %s, past: %s,%s,%s", pidx, j, o, past_data[pidx]["pose_keypoints_2d"][o],past_data[pidx]["pose_keypoints_2d"][o+1],past_data[pidx]["pose_keypoints_2d"][o+2])
+                    #                 # XもYも0の場合、過去から引っ張ってくる
+                    #                 now_data[pidx]["pose_keypoints_2d"][o] = past_data[pidx]["pose_keypoints_2d"][o]
+                    #                 now_data[pidx]["pose_keypoints_2d"][o+1] = past_data[pidx]["pose_keypoints_2d"][o+1]
+                    #                 # 信頼度は減らす
+                    #                 now_data[pidx]["pose_keypoints_2d"][o+2] = past_data[pidx]["pose_keypoints_2d"][o+2] * 0.9
+                    
+                    for pidx in range(_len):
+                        # とりあえず何らかのデータがある場合
+                        for o in range(0,len(now_data[pidx]["pose_keypoints_2d"]),3):
+                            if now_data[pidx]["pose_keypoints_2d"][o] == now_data[pidx]["pose_keypoints_2d"][o+1] == 0:
+                                # logger.debug("過去PU: pidx: %s, o: %s", pidx, o)
+                                # XもYも0の場合、過去から引っ張ってくる
+                                now_data[pidx]["pose_keypoints_2d"][o] = past_data[pidx]["pose_keypoints_2d"][o]
+                                now_data[pidx]["pose_keypoints_2d"][o+1] = past_data[pidx]["pose_keypoints_2d"][o+1]
+                                # 信頼度は半分
+                                now_data[pidx]["pose_keypoints_2d"][o+2] = past_data[pidx]["pose_keypoints_2d"][o+2] / 2
+                    
+                    # 出力し終わったら、過去データとして保持する
+                    past_data = now_data
+
+
+            # インクリメント        
+            cnt += 1
+        
+            # if _iidx >= 4050:
+            #     break
 
     if level[verbose] <= logging.INFO:
-        logger.info("creating Gif {0}/movie_depth.gif, please Wait!".format(baseline_path))
-        imageio.mimsave('{0}/movie_depth.gif'.format(baseline_path), png_lib, fps=30)
+        logger.info("creating Gif {0}/movie_depth.gif, please Wait!".format(os.path.dirname(depth_path)))
+        imageio.mimsave('{0}/movie_depth.gif'.format(os.path.dirname(depth_path)), png_lib, fps=30)
 
     # 終わったら後処理
     cap.release()
     cv2.destroyAllWindows()
 
-    logger.info("Done!!")
-    logger.info("深度推定結果: {0}".format(baseline_path +'/depth.txt'))
+# 0F目を左から順番に並べた人物INDEXを取得する
+def sort_first_idxs(now_datas):
+    most_common_idxs = []
+    th = 0.3
+
+    # 最終的な左からのINDEX
+    result_nearest_idxs = [-1 for x in range(len(now_datas))]
+
+    # 比較対象INDEX(最初は0(左端)を起点とする)
+    target_x = [ 0 for x in range(int(len(now_datas[0]["pose_keypoints_2d"]))) ]
+
+    # 人数分チェック
+    for _idx in range(len(now_datas)):
+        now_nearest_idxs = []
+        # 関節位置Xでチェック
+        for o in range(0,len(now_datas[0]["pose_keypoints_2d"]),3):
+            is_target = True
+            x_datas = []
+            for _pnidx in range(len(now_datas)):
+                if _pnidx not in result_nearest_idxs:
+                    # 人物のうち、まだ左から並べられていない人物だけチェック対象とする
+    
+                    x_data = now_datas[_pnidx]["pose_keypoints_2d"][o]
+                    x_conf = now_datas[_pnidx]["pose_keypoints_2d"][o+2]
+
+                    if x_conf > th and is_target:
+                        # 信頼度が一定以上あって、これまでも追加されている場合、追加
+                        x_datas.append(x_data)
+                    else:
+                        # 一度でも信頼度が満たない場合、チェック対象外
+                        is_target = False
+                else:
+                    # 既に並べられている人物の場合、比較対象にならない値を設定する
+                    x_datas.append(sys.maxsize)
+            
+            # logger.info("sort_first_idxs: _idx: %s, x_datas: %s, is_target: %s", _idx, x_datas, is_target)
+
+            if is_target:
+                # 最終的に対象のままである場合、ひとつ前の人物に近い方のINDEXを取得する
+                now_nearest_idxs.append(get_nearest_idx(x_datas, target_x[o]))
+
+        # logger.info("sort_first_idxs: _idx: %s, now_nearest_idxs: %s", _idx, now_nearest_idxs)
+
+        if len(now_nearest_idxs) > 0:
+            # チェック対象件数がある場合、最頻出INDEXをチェックする
+            most_common_idxs = Counter(now_nearest_idxs).most_common()
+            logger.debug("sort_first_idxs: _idx: %s, most_common_idxs: %s", _idx, most_common_idxs)
+            # 最頻出INDEX
+            result_nearest_idxs[_idx] = most_common_idxs[0][0]
+            # 次の比較元として、再頻出INDEXの人物を対象とする
+            target_x = now_datas[most_common_idxs[0][0]]["pose_keypoints_2d"]
+
+    logger.debug("sort_first_idxs: result_nearest_idxs: %s", result_nearest_idxs)
+
+    return result_nearest_idxs
+
+
+# 左右反転させたINDEX
+OPENPOSE_REVERSE_ALL = {
+    0: 0,
+    1: 1,
+    2: 5,
+    3: 6,
+    4: 7,
+    5: 2,
+    6: 3,
+    7: 4,
+    8: 11,
+    9: 12,
+    10: 13,
+    11: 8,
+    12: 9,
+    13: 10,
+    14: 15,
+    15: 14,
+    16: 17,
+    17: 16,
+    18: 18
+}
+
+# 上半身のみ左右反転させたINDEX
+OPENPOSE_REVERSE_UPPER = {
+    0: 0,
+    1: 1,
+    2: 5,
+    3: 6,
+    4: 7,
+    5: 2,
+    6: 3,
+    7: 4,
+    8: 8,
+    9: 9,
+    10: 10,
+    11: 11,
+    12: 12,
+    13: 13,
+    14: 15,
+    15: 14,
+    16: 17,
+    17: 16,
+    18: 18
+}
+
+# 下半身のみ左右反転させたINDEX
+OPENPOSE_REVERSE_LOWER = {
+    0: 0,
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    6: 6,
+    7: 7,
+    8: 11,
+    9: 12,
+    10: 13,
+    11: 8,
+    12: 9,
+    13: 10,
+    14: 14,
+    15: 15,
+    16: 16,
+    17: 17,
+    18: 18
+}
+
+# 前回のXYと深度から近いindexを算出
+def calc_nearest_idxs(past_sorted_idxs, past_data, now_data, past_pred_ary, now_pred_ary):
+    # logger.debug("past_data: %s", past_data)
+    
+    # 前回の人物データ(前回のソート順に対応させる)
+    # 左右反転もチェックするので、2倍。
+    past_x_ary = [[] for x in range(len(past_data) * 2)]
+    past_y_ary = [[] for x in range(len(past_data) * 2)]
+    past_conf_ary = [[] for x in range(len(past_data) * 2)]
+    # 下半身だけ回転しているパターン用
+    past_lower_x_ary = [[] for x in range(len(past_data) * 2)]
+    past_lower_y_ary = [[] for x in range(len(past_data) * 2)]
+    past_lower_conf_ary = [[] for x in range(len(past_data) * 2)]
+    # 上半身だけ回転しているパターン用
+    past_upper_x_ary = [[] for x in range(len(past_data) * 2)]
+    past_upper_y_ary = [[] for x in range(len(past_data) * 2)]
+    past_upper_conf_ary = [[] for x in range(len(past_data) * 2)]
+    for _pidx, _idx in enumerate(past_sorted_idxs):
+        # logger.debug("past_data[_idx]: %s", past_data[_idx])
+
+        past_xyc = past_data[_idx]["pose_keypoints_2d"]
+
+        # logger.debug("_idx: %s, past_xyc: %s", _idx, past_xyc)
+        # 正データ
+        for o in range(0,len(past_xyc),3):
+            # logger.debug("_idx: %s, o: %s", _idx, o)
+            # 全身反転用
+            past_x_ary[_idx].append(past_xyc[o])
+            past_y_ary[_idx].append(past_xyc[o+1])
+            past_conf_ary[_idx].append(past_xyc[o+2])
+
+            # 下半身反転用
+            past_lower_x_ary[_idx].append(past_xyc[o])
+            past_lower_y_ary[_idx].append(past_xyc[o+1])
+            past_lower_conf_ary[_idx].append(past_xyc[o+2])
+
+            # 上半身反転用
+            past_upper_x_ary[_idx].append(past_xyc[o])
+            past_upper_y_ary[_idx].append(past_xyc[o+1])
+            past_upper_conf_ary[_idx].append(past_xyc[o+2])
+        # 反転データ
+        for o in range(0,len(past_xyc),3):
+            # logger.debug("_idx: %s, o: %s", _idx, o)
+            past_x_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+            past_y_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_ALL[int(o/3)]*3+1])
+            # 反転は信頼度を下げる
+            past_conf_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_ALL[int(o/3)]*3+2] - 0.1)
+        # 下半身反転データ
+        for o in range(0,len(past_xyc),3):
+            # logger.debug("_idx: %s, o: %s", _idx, o)
+            past_lower_x_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_LOWER[int(o/3)]*3])
+            past_lower_y_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+1])
+            # 反転は信頼度を下げる
+            past_lower_conf_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+2] - 0.1)
+        # 上半身反転データ
+        for o in range(0,len(past_xyc),3):
+            # logger.debug("_idx: %s, o: %s", _idx, o)
+            past_upper_x_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_UPPER[int(o/3)]*3])
+            past_upper_y_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+1])
+            # 反転は信頼度を下げる
+            past_upper_conf_ary[_idx + len(now_data)].append(past_xyc[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+2] - 0.1)
+    
+    # logger.debug("past_x_ary: %s", past_x_ary)
+    # logger.debug("past_y_ary: %s", past_y_ary)
+
+    # 今回の人物データ
+    # 全身左右反転もチェックするので、2倍。
+    now_x_ary = [[] for x in range(len(now_data) * 2)]
+    now_y_ary = [[] for x in range(len(now_data) * 2)]
+    now_conf_ary = [[] for x in range(len(now_data) * 2)]
+    # 下半身だけ回転しているパターン用
+    now_lower_x_ary = [[] for x in range(len(now_data) * 2)]
+    now_lower_y_ary = [[] for x in range(len(now_data) * 2)]
+    now_lower_conf_ary = [[] for x in range(len(now_data) * 2)]
+    # 上半身だけ回転しているパターン用
+    now_upper_x_ary = [[] for x in range(len(now_data) * 2)]
+    now_upper_y_ary = [[] for x in range(len(now_data) * 2)]
+    now_upper_conf_ary = [[] for x in range(len(now_data) * 2)]
+    for _idx in range(len(now_data)):
+        now_xyc = now_data[_idx]["pose_keypoints_2d"]
+        # logger.debug("_idx: %s, now_xyc: %s", _idx, now_xyc)
+        # 正データ
+        for o in range(0,len(now_xyc),3):
+            # logger.debug("_idx: %s, o: %s", _idx, o)
+            now_x_ary[_idx].append(now_xyc[o])
+            now_y_ary[_idx].append(now_xyc[o+1])
+            now_conf_ary[_idx].append(now_xyc[o+2])
+
+            # 下半身反転用
+            now_lower_x_ary[_idx].append(now_xyc[o])
+            now_lower_y_ary[_idx].append(now_xyc[o+1])
+            now_lower_conf_ary[_idx].append(now_xyc[o+2])
+
+            # 上半身反転用
+            now_upper_x_ary[_idx].append(now_xyc[o])
+            now_upper_y_ary[_idx].append(now_xyc[o+1])
+            now_upper_conf_ary[_idx].append(now_xyc[o+2])
+        # 反転データ
+        for o in range(0,len(now_xyc),3):
+            # logger.debug("_idx: %s, rev_idx: %s, o: %s, len(now_x_ary): %s, len(now_xyc): %s, OPENPOSE_REVERSE_ALL[o]: %s", _idx, _idx + len(now_data), o, len(now_x_ary), len(now_xyc), OPENPOSE_REVERSE_ALL[int(o/3)])
+            now_x_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+            now_y_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_ALL[int(o/3)]*3+1])
+            # 反転は信頼度をすこし下げる
+            now_conf_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_ALL[int(o/3)]*3+2] - 0.1)
+        # 下半身反転データ
+        for o in range(0,len(now_xyc),3):
+            # logger.debug("_idx: %s, o: %s", _idx, o)
+            now_lower_x_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_LOWER[int(o/3)]*3])
+            now_lower_y_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+1])
+            now_lower_conf_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+2] - 0.1)
+        # 上半身反転データ
+        for o in range(0,len(now_xyc),3):
+            # logger.debug("_idx: %s, o: %s", _idx, o)
+            now_upper_x_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_UPPER[int(o/3)]*3])
+            now_upper_y_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+1])
+            now_upper_conf_ary[_idx + len(now_data)].append(now_xyc[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+2] - 0.1)
+    
+    # 過去の深度データ
+    past_pred = []
+    for _pidx, _idx in enumerate(past_sorted_idxs):
+        past_pred.append(past_pred_ary[_idx])
+
+    # logger.debug("past_pred: %s,", past_pred)
+    # logger.debug("org_past_conf: %s,", org_past_conf)
+
+    # 信頼度の高い順に人物インデックスを割り当てていく
+    avg_conf_ary = []
+    for con in now_conf_ary:
+        # 体幹ほど重みをつけて平均値を求める
+        avg_conf_ary.append(np.average(np.array(con), weights=[0.5,0.8,0.5,0.3,0.1,0.5,0.3,0.1,0.8,0.3,0.1,0.8,0.3,0.1,0.1,0.1,0.1,0.1]))
+    
+    # 信頼度の低い順のインデックス番号
+    conf_idxs = np.argsort(avg_conf_ary)
+    logger.debug("avg_conf_ary: %s", avg_conf_ary)
+    logger.debug("conf_idxs: %s", conf_idxs)
+
+    # # 信頼度の高い順に人物インデックスを割り当てていく
+    # normal_avg_conf_ary = []
+    # for con in now_conf_ary[0:len(now_data)]:
+    #     # 体幹ほど重みをつけて平均値を求める
+    #     normal_avg_conf_ary.append(np.average(np.array(con), weights=[0.5,0.8,0.5,0.3,0.1,0.5,0.3,0.1,0.8,0.3,0.1,0.8,0.3,0.1,0.1,0.1,0.1,0.1]))
+    
+    # # 信頼度の低い順のインデックス番号
+    # normal_conf_idxs = np.argsort(normal_avg_conf_ary)
+
+    # conf_idxs = [-1 for x in range(len(now_conf_ary))]
+    # for _ncidx in range(len(normal_conf_idxs)):
+    #     # 正データ
+    #     conf_idxs[_ncidx] = normal_conf_idxs[_ncidx]+len(now_data)
+    #     # 反転データ
+    #     conf_idxs[_ncidx+len(now_data)] = normal_conf_idxs[_ncidx]
+
+    # logger.debug("normal_avg_conf_ary: %s", normal_avg_conf_ary)
+    # logger.debug("normal_conf_idxs: %s", normal_conf_idxs)
+    # logger.debug("conf_idxs: %s", conf_idxs)
+
+    nearest_idxs = [-1 for x in range(len(conf_idxs))]
+    is_upper_reverses = [False for x in range(len(conf_idxs))]
+    is_lower_reverses = [False for x in range(len(conf_idxs))]
+    most_common_idxs = []
+
+    # logger.debug("past_pred_ary: %s", past_pred_ary)
+    # logger.debug("now_pred_ary: %s", now_pred_ary)
+
+    # XY正の判定用
+    XY_LIMIT = 0.73
+    # XY上半身・下半身のみ反転用。やや厳しめ
+    REV_LIMIT = 0.83
+    # 深度判定用。甘め
+    D_LIMIT = 0.61
+    # 信頼度の低い順の逆順(信頼度降順)に人物を当てはめていく
+    cidx = len(conf_idxs) - 1
+    cidxcnt = 0
+    while cidx >= 0 and cidxcnt < len(conf_idxs):
+        now_conf_idx = conf_idxs[cidx]
+        now_x = now_x_ary[now_conf_idx]
+        now_y = now_y_ary[now_conf_idx]
+        now_conf = now_conf_ary[now_conf_idx]
+
+        logger.debug("cidx: %s, now_conf_idx: %s, %s", cidx, now_conf_idx, now_x)
+
+        # 過去データの当該関節で、現在データと最も近いINDEXのリストを生成
+        now_nearest_idxs, most_common_idxs, is_y, is_top = calc_most_common_idxs(conf_idxs, now_x, now_y, now_conf, past_x_ary, past_y_ary, past_lower_conf_ary)
+
+        sum_most_common_idxs, most_common_per, sum_top2_per, top_frame, second_frame = \
+            get_most_common_frames(most_common_idxs, conf_idxs)
+        
+        logger.debug("len(now_nearest_idxs): %s, all_size: %s, per: %s", len(now_nearest_idxs), (len(now_x) + ( 0 if is_y == False else len(now_y) )), len(now_nearest_idxs) / (len(now_x) + ( 0 if is_y == False else len(now_y) )))
+        if len(now_nearest_idxs) / (len(now_x) + ( 0 if is_y == False else len(now_y) )) < 0.25 :
+            # そもそもの絶対件数が少ない場合、深度チェック
+            logger.debug("深度データチェック cidx: %s, now_conf_idx: %s", cidx, now_conf_idx)
+            # 深度データは反転保持していないので、半分にする
+            now_depth = now_pred_ary[int(now_conf_idx % len(now_data))]
+
+            depth_now_nearest_idxs, depth_most_common_idxs = calc_depth_most_common_idxs(conf_idxs, now_depth, now_conf, past_pred, past_conf_ary, now_nearest_idxs)
+
+            sum_depth_most_common_idxs, depth_most_common_per, depth_sum_top2_per, depth_top_frame, depth_second_frame = \
+                get_most_common_frames(depth_most_common_idxs, conf_idxs)
+                
+            logger.debug("depth_most_common_per: %s, most_common_per: %s", depth_most_common_per, most_common_per)
+            
+            if depth_most_common_per > D_LIMIT and depth_most_common_per > most_common_per:
+                now_nearest_idxs = depth_now_nearest_idxs
+                most_common_idxs = depth_most_common_idxs
+                logger.debug("＊深度データ採用: depth_now_nearest_idxs: %s, depth_most_common_idxs: %s", depth_now_nearest_idxs, depth_most_common_idxs)
+
+        elif most_common_idxs[0][1] / len(now_nearest_idxs) < XY_LIMIT:
+            # チェック対象件数が３割未満、再頻出が8割未満のいずれかの場合、
+            # 上半身と下半身で回転が違っている可能性あり。
+
+            logger.debug("下半身反転データチェック cidx: %s, now_conf_idx: %s", cidx, now_conf_idx)
+            # 下半身だけ反転しているデータで比較する
+            now_lower_x = now_lower_x_ary[now_conf_idx]
+            now_lower_y = now_lower_y_ary[now_conf_idx]
+            now_lower_conf = now_lower_conf_ary[now_conf_idx]
+
+            lower_now_nearest_idxs, lower_most_common_idxs, is_y, is_top = calc_most_common_idxs(conf_idxs, now_lower_x, now_lower_y, now_lower_conf, past_lower_x_ary, past_lower_y_ary, past_conf_ary, OPENPOSE_REVERSE_LOWER )
+
+            sum_lower_most_common_idxs, lower_most_common_per, lower_sum_top2_per, lower_top_frame, lower_second_frame = \
+                get_most_common_frames(lower_most_common_idxs, conf_idxs)
+            logger.debug("lower_most_common_per: %s, most_common_per: %s", lower_most_common_per, most_common_per)
+
+            if lower_most_common_per > REV_LIMIT and lower_most_common_per > most_common_per:
+                # 下半身反転データも同じINDEXで、より精度が高い場合、採用
+                if now_x[2] == 0 or now_x[3] == 0 or now_x[5] == 0 or now_x[6] == 0:
+                    # 上半身がない場合、全身反転とする
+                    now_nearest_idxs = []
+                    for lnni in lower_now_nearest_idxs:
+                        now_nearest_idxs.append(lnni + len(now_data)%2)
+
+                    most_common_idxs = Counter(now_nearest_idxs).most_common()
+
+                    for c in range(len(conf_idxs)):
+                        is_existed = False
+                        for m, mci in enumerate(most_common_idxs):
+                            if c == most_common_idxs[m][0]:
+                                is_existed = True
+                                break
+                        
+                        if is_existed == False:
+                            # 存在しないインデックスだった場合、追加
+                            most_common_idxs.append( (c, 0) )
+                    logger.debug("＊下半身→全身反転データ採用: now_nearest_idxs: %s, most_common_idxs: %s", now_nearest_idxs, most_common_idxs)
+                else:
+                    now_nearest_idxs = lower_now_nearest_idxs
+                    most_common_idxs = lower_most_common_idxs
+                    is_lower_reverses[now_conf_idx] = True
+                    logger.debug("＊下半身反転データ採用: lower_now_nearest_idxs: %s, lower_most_common_idxs: %s, is_lower_reverses: %s", lower_now_nearest_idxs, lower_most_common_idxs, is_lower_reverses)
+            else:
+                # 信頼度が最後のものはチェックしない
+                # 精度が高くない場合、上半身反転データチェック
+                logger.debug("上半身反転データチェック cidx: %s, now_conf_idx: %s", cidx, now_conf_idx)
+
+                # 上半身だけ反転しているデータで比較する
+                now_upper_x = now_upper_x_ary[now_conf_idx]
+                now_upper_y = now_upper_y_ary[now_conf_idx]
+                now_upper_conf = now_upper_conf_ary[now_conf_idx]
+
+                upper_now_nearest_idxs, upper_most_common_idxs, is_y, is_top = calc_most_common_idxs(conf_idxs, now_upper_x, now_upper_y, now_upper_conf, past_upper_x_ary, past_upper_y_ary, past_upper_conf_ary, OPENPOSE_REVERSE_UPPER)
+
+                sum_upper_most_common_idxs, upper_most_common_per, upper_sum_top2_per, upper_top_frame, upper_second_frame = \
+                    get_most_common_frames(upper_most_common_idxs, conf_idxs)
+                logger.debug("upper_most_common_per: %s, most_common_per: %s", upper_most_common_per, most_common_per)
+
+                if upper_most_common_per > REV_LIMIT and upper_most_common_per > most_common_per:
+                    # 上半身反転データも同じINDEXで、より精度が高い場合、採用
+                    if now_x[8] == 0 or now_x[9] == 0 or now_x[11] == 0 or now_x[12] == 0:
+                        # 下半身がない場合、全身反転とする
+                        now_nearest_idxs = []
+                        for unni in upper_now_nearest_idxs:
+                            now_nearest_idxs.append(unni + len(now_data)%2)
+
+                        most_common_idxs = Counter(now_nearest_idxs).most_common()
+
+                        for c in range(len(conf_idxs)):
+                            is_existed = False
+                            for m, mci in enumerate(most_common_idxs):
+                                if c == most_common_idxs[m][0]:
+                                    is_existed = True
+                                    break
+                            
+                            if is_existed == False:
+                                # 存在しないインデックスだった場合、追加
+                                most_common_idxs.append( (c, 0) )
+
+                        logger.debug("＊上半身→全身反転データ採用: now_nearest_idxs: %s, most_common_idxs: %s", now_nearest_idxs, most_common_idxs)
+                    else:
+                        now_nearest_idxs = upper_now_nearest_idxs
+                        most_common_idxs = upper_most_common_idxs
+                        is_upper_reverses[now_conf_idx] = True
+                        logger.debug("＊上半身反転データ採用: upper_now_nearest_idxs: %s, upper_most_common_idxs: %s, is_upper_reverses: %s", upper_now_nearest_idxs, upper_most_common_idxs, is_upper_reverses)
+                else:
+                    logger.debug("most_common_idxs: %s, lower_most_common_idxs: %s, upper_most_common_idxs: %s", most_common_idxs, lower_most_common_idxs, upper_most_common_idxs )
+
+                    # TOP1もしくはTOP1.2で7.5割か
+                    is_top = most_common_idxs[0][1] > len(now_nearest_idxs) * 0.71 or (sum_top2_per > 0.71 and top_frame == second_frame)
+                    logger.debug("再検査:: sum_top2_per: %s, len(now_x): %s, top: %s, second: %s, is_top: %s", sum_top2_per, int(len(conf_idxs)/2), top_frame, second_frame, is_top)
+
+                    if is_top :
+                        logger.debug("全身TOP2の最頻出同一枠のため全身採用: sum_top2_per: %s, top: %s, second: %s", sum_top2_per, most_common_idxs[1][0] % len(now_data), most_common_idxs[1][0] % len(now_data))
+                        is_upper_reverses[now_conf_idx] = False
+                        is_lower_reverses[now_conf_idx] = False
+                    else:
+                        # 下半身反転も上半身反転もダメな場合、改めて深度チェック
+                        logger.debug("深度データチェック cidx: %s, now_conf_idx: %s", cidx, now_conf_idx)
+                        # 深度データは反転保持していないので、半分にする
+                        now_depth = now_pred_ary[int(now_conf_idx % len(now_data))]
+
+                        depth_now_nearest_idxs, depth_most_common_idxs = calc_depth_most_common_idxs(conf_idxs, now_depth, now_conf, past_pred, past_conf_ary, now_nearest_idxs)
+
+                        sum_depth_most_common_idxs = 0
+                        for lmci_data in depth_most_common_idxs:
+                            sum_depth_most_common_idxs += lmci_data[1]
+
+                        sum_most_common_idxs = 0
+                        for mci_data in most_common_idxs:
+                            sum_most_common_idxs += mci_data[1]
+
+                        depth_most_common_per = 0 if sum_depth_most_common_idxs == 0 else depth_most_common_idxs[0][1] / sum_depth_most_common_idxs
+                        most_common_per = 0 if sum_most_common_idxs == 0 else most_common_idxs[0][1] / sum_most_common_idxs
+                        logger.debug("depth_most_common_per: %s, most_common_per: %s", depth_most_common_per, most_common_per)
+                        
+                        # depth_most_common_perの下限は甘め
+                        if depth_most_common_per > D_LIMIT and depth_most_common_per > most_common_per:
+                            now_nearest_idxs = depth_now_nearest_idxs
+                            most_common_idxs = depth_most_common_idxs
+                            is_upper_reverses[now_conf_idx] = False
+                            is_lower_reverses[now_conf_idx] = False
+                            logger.debug("＊深度データ採用: depth_now_nearest_idxs: %s, depth_most_common_idxs: %s", depth_now_nearest_idxs, depth_most_common_idxs)
+                        else:
+                            # 深度データも駄目だったので、とりあえずこれまでの中でもっとも確率の高いのを採用する
+                            if most_common_idxs[0][0] in nearest_idxs and lower_most_common_per > most_common_per:
+                                now_nearest_idxs = lower_now_nearest_idxs
+                                most_common_idxs = lower_most_common_idxs
+                                is_lower_reverses[now_conf_idx] = True
+                                logger.debug("＊深度データ不採用→下半身反転データ採用: lower_now_nearest_idxs: %s, lower_most_common_idxs: %s, is_lower_reverses: %s", lower_now_nearest_idxs, lower_most_common_idxs, is_lower_reverses)
+                            elif most_common_idxs[0][0] in nearest_idxs and upper_most_common_per > most_common_per:
+                                now_nearest_idxs = upper_now_nearest_idxs
+                                most_common_idxs = upper_most_common_idxs
+                                is_upper_reverses[now_conf_idx] = True
+                                logger.debug("＊深度データ不採用→上半身反転データ採用: upper_now_nearest_idxs: %s, upper_most_common_idxs: %s, is_upper_reverses: %s", upper_now_nearest_idxs, upper_most_common_idxs, is_upper_reverses)
+                            else:
+                                logger.debug("＊深度データ不採用→全身データ採用: upper_now_nearest_idxs: %s, upper_most_common_idxs: %s, is_upper_reverses: %s", upper_now_nearest_idxs, upper_most_common_idxs, is_upper_reverses)
+
+        logger.debug("cidx: %s, most_common_idx: %s", cidx, most_common_idxs)
+        
+        # 最も多くヒットしたINDEXを処理対象とする
+        for cmn_idx in range(len(most_common_idxs)):
+            # 入れようとしているINDEXが、採用枠（前半）か不採用枠（後半）か
+            if now_conf_idx < len(now_data):
+                # 採用枠(前半)の場合
+                check_ary = nearest_idxs[0: len(now_data)]
+            else:
+                # 不採用枠(後半)の場合
+                check_ary = nearest_idxs[len(now_data): len(now_data)*2]
+            
+            logger.debug("nearest_idxs: %s, most_common_idxs[cmn_idx][0]: %s, check_ary: %s", nearest_idxs, most_common_idxs[cmn_idx][0], check_ary )
+
+            is_idx_existed = False
+            for ca in check_ary:
+                logger.debug("ca: %s, ca / len(now): %s, most / len(now): %s", ca, ca % len(now_data), most_common_idxs[cmn_idx][0] % len(now_data))
+                if ca >= 0 and ca % len(now_data) == most_common_idxs[cmn_idx][0] % len(now_data):
+                    # 同じ枠に既に同じINDEXの候補が居る場合、TRUE
+                    is_idx_existed = True
+                    break
+
+            if most_common_idxs[cmn_idx][0] in nearest_idxs or is_idx_existed:
+                # 同じINDEXが既にリストにある場合
+                # もしくは入れようとしているINDEXが反対枠の同じ並び順にいるか否か
+                logger.debug("次点繰り上げ cmn_idx:%s, val: %s, nearest_idxs: %s", cmn_idx, most_common_idxs[cmn_idx][0], nearest_idxs)
+                continue
+            elif most_common_idxs[cmn_idx][1] > 0:
+                # 同じINDEXがリストにまだない場合
+                logger.debug("採用 cmn_idx:%s, val: %s, nearest_idxs: %s", cmn_idx, most_common_idxs[cmn_idx][0], nearest_idxs)
+                # 採用の場合、cidx減算
+                cidx -= 1
+                break
+            else:
+                logger.debug("再頻出ゼロ cmn_idx:%s, val: %s, nearest_idxs: %s", cmn_idx, most_common_idxs[cmn_idx][0], nearest_idxs)
+                break
+
+        logger.debug("結果: near: %s, cmn_idx: %s, val: %s, most_common_idxs: %s", now_conf_idx, cmn_idx, most_common_idxs[cmn_idx][0], most_common_idxs)
+
+        if most_common_idxs[cmn_idx][1] > 0:
+            # 信頼度の高いINDEXに該当する最多ヒットINDEXを設定
+            nearest_idxs[now_conf_idx] = most_common_idxs[cmn_idx][0]
+        
+        # 現在のループ回数は必ず加算
+        cidxcnt += 1
+
+        logger.debug("now_conf_idx: %s, cidx: %s, cidxcnt: %s, nearest_idxs: %s ---------------------", now_conf_idx, cidx, cidxcnt, nearest_idxs)
+
+    logger.debug("nearest_idxs: %s", nearest_idxs)
+
+    if -1 in nearest_idxs:
+        # 不採用になって判定できなかったデータがある場合
+        for _nidx, _nval in enumerate(nearest_idxs):
+            if _nval == -1:
+                # 該当値が-1(判定不可）の場合
+                for _cidx in range(len(conf_idxs)):
+                    logger.debug("_nidx: %s, _nval: %s, _cidx: %s, _cidx not in nearest_idxs: %s", _nidx, _nval, _cidx, _cidx not in nearest_idxs)
+                    # INDEXを頭から順に見ていく（正0, 正1 ... 正n, 逆0, 逆1 ... 逆n)
+                    if _cidx not in nearest_idxs:
+                        # 該当INDEXがリストに無い場合、設定
+                        nearest_idxs[_nidx] = _cidx
+                        break
+                else:
+                    # 多重ループを一気に抜ける
+                    continue
+                break
+
+    logger.debug("nearest_idxs(retake): %s", nearest_idxs)
+    logger.debug("is_upper_reverses: %s, is_lower_reverses: %s", is_upper_reverses, is_lower_reverses)
+
+    # 最終的に人数分だけ残したINDEXリスト
+    result_nearest_idxs = [-1 for x in range(len(now_data))]
+    result_is_all_reverses = [False for x in range(len(now_data))]
+    result_is_upper_reverses = [False for x in range(len(now_data))]
+    result_is_lower_reverses = [False for x in range(len(now_data))]
+    for _ridx in range(len(now_data)):
+        # 反転の可能性があるので、人数で割った余りを設定する
+        sidx = int(nearest_idxs[_ridx] % len(now_data))
+
+        if _ridx < len(now_data):
+            # 自分より前に、自分と同じINDEXが居る場合、次のINDEXを引っ張り出す
+            s = 1
+            while sidx in result_nearest_idxs[0:_ridx+1]:
+                newsidx = int(nearest_idxs[_ridx+s] % len(now_data))
+                logger.debug("INDEX重複のため、次点繰り上げ: %s, sidx: %s, newsidx: %s", _ridx, sidx, newsidx)
+                sidx = newsidx
+                s += 1
+
+        result_nearest_idxs[_ridx] = sidx
+        result_is_upper_reverses[sidx] = is_upper_reverses[_ridx]
+        result_is_lower_reverses[sidx] = is_lower_reverses[_ridx]
+        result_is_all_reverses[sidx] = True if nearest_idxs[_ridx] >= len(now_data) and is_upper_reverses[_ridx] == False and is_lower_reverses[_ridx] == False else False
+
+            
+    logger.debug("result_nearest_idxs: %s, all: %s, upper: %s, lower: %s", result_nearest_idxs, result_is_all_reverses, result_is_upper_reverses, result_is_lower_reverses)
+
+    return result_nearest_idxs, result_is_all_reverses, result_is_upper_reverses, result_is_lower_reverses
+
+
+# 過去データと現在データを比較して、頻出インデックス算出
+def calc_most_common_idxs(conf_idxs, now_x, now_y, now_confs, past_x_ary, past_y_ary, past_conf_ary, idx_target=None):
+    # 過去データの当該関節で、現在データと最も近いINDEXのリストを生成
+    now_nearest_idxs = []
+    most_common_idxs = []
+    th = 0.3
+
+    # X方向の頻出インデックス
+    now_nearest_idxs, most_common_idxs, is_top = \
+        calc_one_dimensional_most_common_idxs("x", conf_idxs, now_x, now_confs, past_x_ary, past_conf_ary, now_nearest_idxs, idx_target)
+
+    if len(now_nearest_idxs) < len(now_x) * 0.2 or is_top == False:
+        # チェック対象件数が2割未満、再頻出が70%未満、TOP2が別枠のいずれかの場合、
+        # 位置データYを追加して、再度頻出チェック
+
+        now_nearest_idxs, most_common_idxs, is_top = \
+            calc_one_dimensional_most_common_idxs("y", conf_idxs, now_y, now_confs, past_y_ary, past_conf_ary, now_nearest_idxs, idx_target)
+
+        return now_nearest_idxs, most_common_idxs, True, is_top
+
+    return now_nearest_idxs, most_common_idxs, False, is_top
+
+# 一方向だけの頻出インデックス算出
+def calc_one_dimensional_most_common_idxs(dimensional, conf_idxs, now_datas, now_confs, past_datas, past_confs, now_nearest_idxs, idx_target=None):
+    # 過去データの当該関節で、現在データと最も近いINDEXのリストを生成
+    most_common_idxs = []
+    th = 0.3
+
+    # # 位置データ(全身＋手足)
+    # for _idx in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,2,3,4,5,6,7,8,9,10,11,12,13]:
+    # 位置データ(全身)
+    for _idx in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]:
+        one_data = now_datas[_idx]
+        past_person = []
+        for p, c in zip(past_datas, past_confs):
+            # logger.debug("p: %s, c: %s", p, c)
+            if _idx < len(p):
+                pdata = 0
+                if idx_target is None:
+                    # logger.debug("c[_idx]: %s", c[_idx])
+                    # pdata = 0 if c[_idx] < th else p[_idx]
+                    pdata = p[_idx]
+                else:
+                    # logger.debug("c[idx_target[_idx]]: %s", c[idx_target[_idx]])
+                    # pdata = 0 if c[idx_target[_idx]] < th else p[idx_target[_idx]]
+                    pdata = p[idx_target[_idx]]
+                
+                past_person.append(pdata) 
+
+        # 今回データがないものはチェック対象外
+        if len(past_person) > 0 and 0 not in past_person and one_data > 0 and now_confs[_idx] > th:
+            logger.debug("%s: %s, one_data %s", dimensional, past_person, one_data)
+            now_nearest_idxs.append(get_nearest_idx(past_person, one_data))
+        else:
+            # logger.debug("%s:: past_person対象外: %s, x_data %s", dimensional, past_person, x_data)
+            pass
+
+    if len(now_nearest_idxs) > 0:
+        most_common_idxs = Counter(now_nearest_idxs).most_common()
+
+    # 頻出で振り分けた後、件数が足りない場合（全部どれか1つに寄せられている場合)
+    if len(most_common_idxs) < len(conf_idxs):
+        # logger.debug("頻出カウント不足: len(most_common_idxs): %s, len(conf_idxs): %s ", len(most_common_idxs), len(conf_idxs))
+        for c in range(len(conf_idxs)):
+            is_existed = False
+            for m, mci in enumerate(most_common_idxs):
+                if c == most_common_idxs[m][0]:
+                    is_existed = True
+                    break
+            
+            if is_existed == False:
+                # 存在しないインデックスだった場合、追加                 
+                most_common_idxs.append( (c, 0) )
+    
+    logger.debug("%s:: len(most_common_idxs): %s, len(conf_idxs): %s, len(now_nearest_idxs): %s, dimensional,len(now_datas): %s", dimensional, len(most_common_idxs), len(conf_idxs), len(now_nearest_idxs), len(now_datas))
+    logger.debug("%s:: now_nearest_idxs: %s, most_common_idxs: %s", dimensional, now_nearest_idxs, most_common_idxs)
+
+    sum_most_common_idxs, most_common_per, sum_top2_per, top_frame, second_frame = \
+        get_most_common_frames(most_common_idxs, conf_idxs)
+
+    # TOP1だけで7割か、TOP2で8割か
+    is_top = most_common_idxs[0][1] > len(now_nearest_idxs) * 0.7 or (sum_top2_per > 0.8 and top_frame == second_frame)
+    logger.debug("%s:: sum_top2_per: %s, len(now_datas): %s, top: %s, second: %s, is_top: %s", dimensional, sum_top2_per, int(len(conf_idxs)/2), top_frame, second_frame, is_top)
+
+    return now_nearest_idxs, most_common_idxs, is_top
+
+def get_most_common_frames(most_common_idxs, conf_idxs):
+
+    sum_most_common_idxs = 0
+    for mci_data in most_common_idxs:
+        sum_most_common_idxs += mci_data[1]
+    sum_top2_per = 0 if sum_most_common_idxs == 0 else (most_common_idxs[0][1] + most_common_idxs[1][1]) / sum_most_common_idxs
+    top_frame = most_common_idxs[0][0] % int(len(conf_idxs)/2)
+
+    # 下位が同率の場合、同じ枠があるかチェックする
+    # １人の場合にも１回だけループを回すため、1から開始
+    smidx = 1
+    while smidx < len(most_common_idxs):
+        if most_common_idxs[1][1] == most_common_idxs[smidx][1]:
+            # ２位と３位以下が同率の場合
+            second_frame = most_common_idxs[1][0] % int(len(conf_idxs)/2)
+            third_frame = most_common_idxs[smidx][0] % int(len(conf_idxs)/2)
+            # 1位と同じ枠を採用
+            second_frame = third_frame if top_frame == third_frame else second_frame
+            
+            logger.debug("smidx: %s, top_frame: %s, second_frame: %s, third_frame: %s, most_common_idxs: %s", smidx, top_frame, second_frame, third_frame, most_common_idxs)
+
+            smidx += 1
+        else:
+            second_frame = most_common_idxs[1][0] % int(len(conf_idxs)/2)
+            break
+
+    most_common_per = 0 if sum_most_common_idxs == 0 else most_common_idxs[0][1] / sum_most_common_idxs
+
+    logger.debug("top_frame: %s, second_frame: %s, sum_most_common_idxs: %s, most_common_per: %s", top_frame, second_frame, sum_most_common_idxs, most_common_per)
+
+    return sum_most_common_idxs, most_common_per, sum_top2_per, top_frame, second_frame
+
+
+# 深度データで人物判定
+def calc_depth_most_common_idxs(conf_idxs, now_depth, now_conf, past_depth_ary, past_conf_ary, now_nearest_idxs):
+    # XYの頻出は引き継がない
+    now_nearest_idxs = []
+    most_common_idxs = []
+    th = 0.1
+
+    # 深度データY(全身＋体幹)
+    for d_idx in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,0,1,2,6,8,11]:
+        if d_idx < len(now_depth):
+            d_data = now_depth[d_idx]
+            past_depths = []
+            for p in past_depth_ary:
+                if d_idx < len(p):
+                    # logger.debug("d_idx: %s, p[d_idx]: %s, c[d_idx]: %s", d_idx, p[d_idx], c[d_idx])
+                    past_depths.append(p[d_idx]) 
+
+        # 今回データがないものはチェック対象外
+        if len(past_depths) > 0 and 0 not in past_depths and d_data > 0:
+            logger.debug("past_depths: %s, d_data %s", past_depths, d_data)
+            now_nearest_idxs.append(get_nearest_idx(past_depths, d_data))
+        else:
+            logger.debug("past_depths対象外: %s, d_data %s", past_depths, d_data)
+
+    if len(now_nearest_idxs) > 0:
+        most_common_idxs = Counter(now_nearest_idxs).most_common()
+
+    logger.debug("d:: now_nearest_idxs: %s, most_common_idxs: %s, ", now_nearest_idxs, most_common_idxs)
+
+    # logger.debug("past_depth_ary: %s", past_depth_ary)
+
+    # past_depths = []
+    # for p in past_depth_ary:
+    #     past_sum_depths = []
+    #     logger.debug("now_depth: %s", now_depth)
+    #     for d_idx in range(len(now_depth)):
+    #         logger.debug("d_idx: %s", d_idx)
+    #         past_sum_depths.append(p[d_idx]) 
+
+    #     logger.debug("past_sum_depths: %s", past_sum_depths)
+
+    #     # 重み付けした平均値を求める
+    #     past_depths.append(np.average(np.array(past_sum_depths), weights=[0.1,0.8,0.5,0.3,0.1,0.5,0.3,0.1,0.8,0.3,0.1,0.8,0.3,0.1,0.1,0.1,0.1,0.1]))
+        
+    #     # 今回データがないものはチェック対象外
+    #     # if len(past_depths) > 0 and 0 not in past_depths and d_data > 0 and now_conf[d_idx] > th:
+    #     #     logger.debug("[limbs] past_depths: %s, d_data %s", past_depths, d_data)
+    #     #     now_nearest_idxs.append(get_nearest_idx(past_depths, d_data))
+
+    # if len(now_nearest_idxs) > 0:
+    #     most_common_idxs = Counter(now_nearest_idxs).most_common()
+
+    # logger.debug("d:: now_nearest_idxs: %s, most_common_idxs: %s", now_nearest_idxs, most_common_idxs)
+
+    # 頻出で振り分けた後、件数が足りない場合（全部どれか1つに寄せられている場合)
+    if len(most_common_idxs) < len(conf_idxs):
+        # logger.debug("頻出カウント不足: len(most_common_idxs): %s, len(conf_idxs): %s ", len(most_common_idxs), len(conf_idxs))
+        for c in range(len(conf_idxs)):
+            is_existed = False
+            for m, mci in enumerate(most_common_idxs):
+                if c == most_common_idxs[m][0]:
+                    is_existed = True
+                    break
+            
+            if is_existed == False:
+                # 存在しないインデックスだった場合、追加                 
+                most_common_idxs.append( (c, 0) )
+    
+    return now_nearest_idxs, most_common_idxs
+
+
+def get_nearest_idx(target_list, num):
+    """
+    概要: リストからある値に最も近い値のINDEXを返却する関数
+    @param target_list: データ配列
+    @param num: 対象値
+    @return 対象値に最も近い値のINDEX
+    """
+
+    # logger.debug(target_list)
+    # logger.debug(num)
+
+    # リスト要素と対象値の差分を計算し最小値のインデックスを取得
+    idx = np.abs(np.asarray(target_list) - num).argmin()
+    return idx
+
 
 def predict(model_data_path, image_path):
 
-    
     # Default input size
     height = 228
     width = 304
@@ -269,36 +1393,123 @@ def predict(model_data_path, image_path):
         
         return pred
         
+# Openposeから必要な部分だけ抽出
+# 人体の位置が分かる事が重要なので、線形補間等は行わない
+# Openposeの生のデータを使用する。
+def read_openpose_json(openpose_output_dir):
+    # openpose output format:
+    # [x1,y1,c1,x2,y2,c2,...]
+    # ignore confidence score, take x and y [x1,y1,x2,y2,...]
 
-# 関節2次元情報を取得
-def load_smoothed_2d(smoothed_file):
-    smoothed_2d = []
-    n = 0
-    with open(smoothed_file, "r") as sf:
-        line = sf.readline() # 1行を文字列として読み込む(改行文字も含まれる)
+    openpose_filenames = []
+
+    logger.info("start reading data: %s", openpose_output_dir)
+    #load json files
+    json_files = os.listdir(openpose_output_dir)
+    # check for other file types
+    json_files = sorted([filename for filename in json_files if filename.endswith(".json")])
+
+    # jsonのファイル数が読み取り対象フレーム数
+    _json_size = len(json_files)
+
+    start_frame_index = 0
+    is_started = False
+
+    for file_name in json_files:
+        logger.debug("reading {0}".format(file_name))
+        _file = os.path.join(openpose_output_dir, file_name)
+        if not os.path.isfile(_file): raise Exception("No file found!!, {0}".format(_file))
+        data = json.load(open(_file))
+
+        # 12桁の数字文字列から、フレームINDEX取得
+        frame_idx = int(re.findall("(\d{12})", file_name)[0])
         
-        while line:
-            # 空白で複数項目に分解
-            smoothed = re.split("\s+", line)
+        # ファイル名保持
+        openpose_filenames.append(file_name)
 
-            # logger.debug(smoothed)
+        # 人数を計算
+        _len = len(data["people"])
 
-            smoothed_2d.append([ \
-                # 右足付け根
-                [float(smoothed[16]), float(smoothed[17])], \
-                # 左足付け根
-                [float(smoothed[22]), float(smoothed[23])], \
-                # 右足首
-                [float(smoothed[20]), float(smoothed[21])], \
-                # 左足首
-                [float(smoothed[26]), float(smoothed[27])] \
-            ])
+        if _len <= 0:
+            # 人数が足りない場合、とりあえず空のを読み込んどく
+            data = json.load(open("tensorflow/json/empty_keypoints.json"))
 
-            n += 1
+        # 人数分データ
+        _multi_data = []
 
-            line = sf.readline()
-    
-    return smoothed_2d
+        if frame_idx <= 0 or is_started == False:
+            # 最初のフレームはそのまま登録するため、INDEXをそのまま指定
+            for pidx in range(_len):
+                _multi_data.append(data["people"][pidx]["pose_keypoints_2d"])
+
+            # 開始したらフラグを立てる
+            is_started = True
+            # 開始フレームインデックス保持
+            start_frame_index = frame_idx
+
+            # 初期化
+            cache = [[[] for y in range(_len) ] for x in range(_json_size)]
+            cache_confidence = [[[] for y in range(_len) ] for x in range(_json_size)]
+        else:
+            # 人数分セット
+            for pidx in range(_len):
+                _multi_data.append(data["people"][pidx]["pose_keypoints_2d"])
+
+        # 配列用のインデックス
+        _idx = frame_idx - start_frame_index
+
+        # 人数分のデータを保持
+        for _pidx, _data in enumerate(_multi_data):
+            xy = []
+            confidence = []
+            for o in range(0,len(_data),3):
+                xy.append(_data[o])
+                xy.append(_data[o+1])
+                confidence.append(_data[o+2])
+        
+            # logger.debug("found {0} for frame {1}".format(xy, str(frame_idx)))
+            #add xy to frame
+            cache[_idx][_pidx] = xy
+            cache_confidence[_idx][_pidx] = confidence
+
+    # logger.debug("cache: %s", cache)
+    # logger.debug("cache_confidence: %s", cache_confidence)
+
+    openpose_2d = [[[] for y in range(len(cache[0])) ] for x in range(_json_size)]
+    logger.debug("len(openpose_2d): %s, len(openpose_2d[0]): %s", len(openpose_2d), len(openpose_2d[0]))
+
+    # 推定用の関節位置を保持
+    for frame, one_xy in enumerate(cache):
+        for pidx, xy in enumerate(one_xy):
+            # logger.debug("pidx: %s, xy: %s", pidx, len(xy))
+            if len(xy) <= 0:
+                # 1フレーム分のデータに関節情報がまったくない場合
+                # 仮で全データにあり得ない値を入れておく
+                openpose_2d[frame][pidx] = [ [float(-1), float(-1)] for x in range(int( len(cache[0][0]) /2)) ]
+            else:
+                # joints x,y array
+                _len = len(xy) # 36
+
+                # 1フレーム1人分のデータ
+                one_xy_2d = []
+
+                for x in range(0,_len,2):
+                    # set x and y
+                    y = x+1
+                    
+                    # logger.debug("pidx: %s, xy: %s", pidx, xy)
+                    # logger.debug("conf: %s", cache_confidence[frame][pidx][int(x / 2)])
+                    if cache_confidence[frame][pidx][int(x / 2)] > 0.3:
+                        # 信頼度が一定以上の場合、関節の位置保持
+                        one_xy_2d.append([float(xy[x]), float(xy[y])])
+                    else:
+                        # 信頼度が満たない場合、あり得ない値保持
+                        one_xy_2d.append([float(-1), float(-1)])
+
+                logger.debug("frame: %s, pidx: %s, xy: %s: %s", frame, pidx, x, one_xy_2d)
+                openpose_2d[frame][pidx] = one_xy_2d
+
+    return start_frame_index, openpose_2d, openpose_filenames
        
 # 開始フレームを取得
 def load_start_frame(start_frame_file):
@@ -311,25 +1522,91 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', dest='model_path', help='Converted parameters for the model', type=str)
     parser.add_argument('--video_path', dest='video_path', help='input video', type=str)
-    parser.add_argument('--baseline_path', dest='baseline_path', help='baseline result path', type=str)
+    parser.add_argument('--json_path', dest='json_path', help='openpose json result path', type=str)
+    parser.add_argument('--now', dest='now', help='now', default=None, type=str)
     parser.add_argument('--interval', dest='interval', help='interval', type=int)
+    parser.add_argument('--reverse_frames', dest='reverse_frames', help='reverse_frames', default="", type=str)
+    parser.add_argument('--order_specific', dest='order_specific', help='order_specific', default="", type=str)
     parser.add_argument('--verbose', dest='verbose', help='verbose', type=int)
     args = parser.parse_args()
 
     logger.setLevel(level[args.verbose])
 
-    # 関節二次元データを取得
-    smoothed_2d = load_smoothed_2d("{0}/smoothed.txt".format(args.baseline_path))
-
-    # 開始フレームインデックス
-    start_frame = load_start_frame("{0}/start_frame.txt".format(args.baseline_path))
-    logger.info("開始フレームインデックス: %d", start_frame)
-
     # 間隔は1以上の整数
     interval = args.interval if args.interval > 0 else 1
 
+    # 出力用日付
+    if args.now is None:
+        now_str = "{0:%Y%m%d_%H%M%S}".format(datetime.datetime.now())
+    else:
+        now_str = args.now
+
+    # 反転判定用辞書作成
+    reverse_frame_dict = {}
+    if args.reverse_frames is not None and len(args.reverse_frames) > 0:
+        for frame in args.reverse_frames.split(','):
+            # カンマで区切られている場合、各フレームを指定する
+            if '-' in frame:
+                # ハイフンで区切られている場合、フレーム範囲を指定する
+                frange = frame.split('-')
+                logger.debug("frange: %s", frange)
+                if len(frange) >= 2 and frange[0].isdecimal() and frange[1].isdecimal():
+                    for f in range(int(frange[0]), int(frange[1])+1):
+                        # 指定フレームの辞書作成
+                        reverse_frame_dict[f] = True
+                else:
+                    logger.warn("反転フレーム範囲指定失敗: [%s]", frame)
+            elif frame.isdecimal():
+                # 指定フレームの辞書作成
+                reverse_frame_dict[int(frame)] = True
+            else:
+                logger.warn("反転フレーム範囲指定失敗: [%s]", frame)
+
+        logger.info("反転フレームリスト: %s", reverse_frame_dict.keys())
+
+    # 強制順番指定用辞書作成
+    order_specific_dict = {}
+    if args.order_specific is not None and len(args.order_specific) > 0:
+        for frame in args.order_specific.split(']'):
+            # 終わりカッコで区切る
+            if ':' in frame:
+                # コロンでフレーム番号と人物を区切る
+                frames = frame.lstrip("[").split(':')[0]
+                logger.info("frames: %s", frames)
+                if '-' in frames:
+                    frange = frames.split('-')
+                    if len(frange) >= 2 and frange[0].isdecimal() and frange[1].isdecimal():
+                        for f in range(int(frange[0]), int(frange[1])+1):
+                            # 指定フレームの辞書作成
+                            order_specific_dict[f] = []
+
+                            for person_idx in frame.split(':')[1].split(','):
+                                order_specific_dict[f].append(int(person_idx))
+                else:        
+                    if frames not in order_specific_dict:
+                        # 該当フレームがまだない場合、作成
+                        order_specific_dict[int(frames)] = []
+
+                        for person_idx in frame.split(':')[1].split(','):
+                            order_specific_dict[int(frames)].append(int(person_idx))
+                
+
+        logger.info("順番指定リスト: %s", order_specific_dict)
+
+    # 日付+depthディレクトリ作成
+    depth_path = '{0}/{1}_{2}_depth'.format(os.path.dirname(args.json_path), os.path.basename(args.json_path), now_str)
+    
+    os.makedirs(depth_path)
+
+    # 関節二次元データを取得
+    start_frame, openpose_2d, openpose_filenames = read_openpose_json(args.json_path)
+    logger.info("開始フレームインデックス: %d", start_frame)
+
     # Predict the image
-    predict_video(args.model_path, args.video_path, args.baseline_path, interval, smoothed_2d, start_frame, args.verbose)
+    predict_video(now_str, args.model_path, args.video_path, depth_path, interval, args.json_path, openpose_2d, openpose_filenames, start_frame, reverse_frame_dict, order_specific_dict, args.verbose)
+
+    logger.info("Done!!")
+    logger.info("深度推定結果: {0}".format(depth_path +'/depth.txt'))
 
 if __name__ == '__main__':
     main()
