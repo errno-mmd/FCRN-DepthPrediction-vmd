@@ -11,7 +11,7 @@
 
 ## 準備
 
-詳細は、[Qiita](https://qiita.com/miu200521358/items/d826e9d70853728abc51)を参照して下さい。(現在作成中)
+詳細は、[Qiita](https://qiita.com/miu200521358/items/d826e9d70853728abc51)を参照して下さい。
 
 ### 依存関係
 
