@@ -17,9 +17,16 @@
 
 python3系 で以下をインストールして下さい
 
-- [Tensorflow](https://www.tensorflow.org/)
 - [OpenCV](http://opencv.org/)
-- [tensorflow](https://www.tensorflow.org/) 1.0 or later
+- [tensorflow](https://www.tensorflow.org/) 1.0 ～ 1.6
+- numpy
+- python-dateutil
+- pytz
+- pyparsing
+- six
+- matplotlib
+- opencv-python
+- imageio
 
 補足）以下プログラムが動作する環境であれば、追加インストール不要です。
  - [miu200521358/3d-pose-baseline-vmd](https://github.com/miu200521358/3d-pose-baseline-vmd)
@@ -91,7 +98,7 @@ Simplified BSD License
 - クレジットへの記載を、テキストで検索できる形で記載お願いします。
 
 ```
-ツール名：モーショントレース自動化キット
+ツール名：MMDモーショントレース自動化キット
 権利者名：miu200521358
 ```
 
@@ -100,7 +107,7 @@ Simplified BSD License
 ```
 LICENCE
 
-モーショントレース自動化キット
+MMDモーショントレース自動化キット
 【Openpose】：CMU　…　https://github.com/CMU-Perceptual-Computing-Lab/openpose
 【Openpose起動バッチ】：miu200521358　…　https://github.com/miu200521358/openpose-simple
 【深度推定】：Iro Laina, miu200521358　…　https://github.com/miu200521358/FCRN-DepthPrediction-vmd
