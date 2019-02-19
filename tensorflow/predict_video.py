@@ -218,7 +218,11 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                             pred_y = int(pred_height * scale_orig_y)
                             # logger.debug("s: %s, n: %s, pred_x: %s, pred_y: %s, len(pred[0]): %s", _idx, n_idx, pred_x, pred_y, len(pred))
 
-                            depth = pred[0][pred_y][pred_x][0]
+                            if 0 <= pred_y < len(pred[0]) and 0 <= pred_x < len(pred[0][pred_y]):
+                                # たまにデータが壊れていて、「9.62965e-35」と取れてしまった場合の対策
+                                depth = pred[0][pred_y][pred_x][0]
+                            else:
+                                pred_ary.append(0)
 
                             # logger.debug("s: %s, n: %s, pred_x: %s, pred_y: %s, depth: %s", _idx, n_idx, pred_x, pred_y, depth)
 
@@ -291,7 +295,11 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
             # JSONファイルを読み直す
             _file = os.path.join(openpose_output_dir, openpose_filenames[_iidx])
             if not os.path.isfile(_file): raise Exception("No file found!!, {0}".format(_file))
-            data = json.load(open(_file))
+            try:
+                data = json.load(open(_file))
+            except Exception as e:
+                logger.warn("JSON読み込み失敗のため、空データ読み込み, %s %s", _file, e)
+                data = json.load(open("tensorflow/json/all_empty_keypoints.json"))
 
             # 人数を計算
             _len = len(data["people"])
@@ -384,13 +392,14 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                     now_data[pidx] = outputdata
             else:
                 # 何らかのデータがある場合
-                for pidx in range(_len):
+                for pidx in range(people_size):
                     # 一旦空データを読む
                     outputdata = json.load(open("tensorflow/json/empty_keypoints.json"))
 
                     # 出力対象となるpeople内のINDEX
                     sidx = sorted_idxs[_iidx][pidx]
 
+                    # サイズが足りない場合、空データを出力する
                     targetdata = data["people"][sidx]["pose_keypoints_2d"]
 
                     # 出力対象となるpeople内のINDEX反転有無
@@ -477,6 +486,13 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                             outputdata["people"][0]["pose_keypoints_2d"][o+1] = targetdata[o+1]
                             outputdata["people"][0]["pose_keypoints_2d"][o+2] = targetdata[o+2]
 
+                        if outputdata["people"][0]["pose_keypoints_2d"][o] > orig_width or outputdata["people"][0]["pose_keypoints_2d"][o] < 0 \
+                            or outputdata["people"][0]["pose_keypoints_2d"][o+1] > orig_height or outputdata["people"][0]["pose_keypoints_2d"][o+1] < 0 :
+                            # 画像範囲外のデータが取れた場合、とりあえず0を入れ直す
+                            outputdata["people"][0]["pose_keypoints_2d"][o] = 0
+                            outputdata["people"][0]["pose_keypoints_2d"][o+1] = 0
+                            outputdata["people"][0]["pose_keypoints_2d"][o+2] = 0
+                            
                     logger.debug("outputdata %s", outputdata["people"][0]["pose_keypoints_2d"])
 
                     # インデックス対応分のディレクトリ作成
@@ -628,6 +644,19 @@ def sort_first_idxs(now_datas):
             target_x = now_datas[most_common_idxs[0][0]]["pose_keypoints_2d"]
 
     logger.debug("sort_first_idxs: result_nearest_idxs: %s", result_nearest_idxs)
+
+    if -1 in result_nearest_idxs:
+        # 不採用になって判定できなかったデータがある場合
+        for _nidx, _nval in enumerate(result_nearest_idxs):
+            if _nval == -1:
+                # 該当値が-1(判定不可）の場合
+                for _cidx in range(len(now_datas)):
+                    logger.debug("_nidx: %s, _nval: %s, _cidx: %s, _cidx not in nearest_idxs: %s", _nidx, _nval, _cidx, _cidx not in result_nearest_idxs)
+                    # INDEXを頭から順に見ていく（正0, 正1 ... 正n, 逆0, 逆1 ... 逆n)
+                    if _cidx not in result_nearest_idxs:
+                        # 該当INDEXがリストに無い場合、設定
+                        result_nearest_idxs[_nidx] = _cidx
+                        break
 
     return result_nearest_idxs
 
@@ -1107,10 +1136,6 @@ def calc_nearest_idxs(past_sorted_idxs, past_data, now_data, past_pred_ary, now_
                         # 該当INDEXがリストに無い場合、設定
                         nearest_idxs[_nidx] = _cidx
                         break
-                else:
-                    # 多重ループを一気に抜ける
-                    continue
-                break
 
     logger.debug("nearest_idxs(retake): %s", nearest_idxs)
     logger.debug("is_upper_reverses: %s, is_lower_reverses: %s", is_upper_reverses, is_lower_reverses)
@@ -1414,12 +1439,17 @@ def read_openpose_json(openpose_output_dir):
 
     start_frame_index = 0
     is_started = False
+    first_people_size = 1
 
     for file_name in json_files:
         logger.debug("reading {0}".format(file_name))
         _file = os.path.join(openpose_output_dir, file_name)
         if not os.path.isfile(_file): raise Exception("No file found!!, {0}".format(_file))
-        data = json.load(open(_file))
+        try:
+            data = json.load(open(_file))
+        except Exception as e:
+            logger.warn("JSON読み込み失敗のため、空データ読み込み, %s %s", _file, e)
+            data = json.load(open("tensorflow/json/all_empty_keypoints.json"))
 
         # 12桁の数字文字列から、フレームINDEX取得
         frame_idx = int(re.findall("(\d{12})", file_name)[0])
@@ -1446,6 +1476,8 @@ def read_openpose_json(openpose_output_dir):
             is_started = True
             # 開始フレームインデックス保持
             start_frame_index = frame_idx
+            # 人数保持
+            first_people_size = _len
 
             # 初期化
             cache = [[[] for y in range(_len) ] for x in range(_json_size)]
@@ -1454,6 +1486,13 @@ def read_openpose_json(openpose_output_dir):
             # 人数分セット
             for pidx in range(_len):
                 _multi_data.append(data["people"][pidx]["pose_keypoints_2d"])
+            
+            epidx = 0
+            while epidx + _len < first_people_size:
+                # 足りない分、空データを加算する
+                _multi_data.append(json.load(open("tensorflow/json/one_keypoints.json"))["pose_keypoints_2d"])
+
+                epidx += 1
 
         # 配列用のインデックス
         _idx = frame_idx - start_frame_index
