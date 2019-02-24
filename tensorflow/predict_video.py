@@ -29,7 +29,7 @@ level = {0:logging.ERROR,
             3:logging.DEBUG}
 
 
-def predict_video(now_str, model_path, video_path, depth_path, interval, openpose_output_dir, openpose_2d, openpose_filenames, start_frame, reverse_frame_dict, order_specific_dict, verbose):
+def predict_video(now_str, model_path, video_path, depth_path, interval, openpose_output_dir, openpose_2d, openpose_filenames, start_frame, reverse_frame_dict, order_specific_dict, is_avi_output, verbose):
     # 深度用サブディレクトリ
     subdir = '{0}/depth'.format(depth_path)
     if os.path.exists(subdir):
@@ -99,10 +99,14 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
         is_upper_reverses = [[False for y in range(people_size)] for x in range(len(openpose_filenames))]
         # 並べ直したindex用配列反転有無(下半身のみ)
         is_lower_reverses = [[False for y in range(people_size)] for x in range(len(openpose_filenames))]
+        # 並べ直したindex用片寄せ有無
+        is_onesides = [[False for y in range(people_size)] for x in range(len(openpose_filenames))]
         # 現在反転中か否か(上半身)
         is_now_upper_reversed = [False for y in range(people_size)]
         # 現在反転中か否か(下半身)
         is_now_lower_reversed = [False for y in range(people_size)]
+        # ファイル名フォーマット
+        first_file_name = openpose_filenames[0]
 
         # 基準となる深度(1人目の0F目平均値)
         base_depth = 0.0
@@ -290,8 +294,6 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                 cnt += 1
                 continue
 
-            logger.debug("人体別処理: idx: %s, iidx: %s cnt: %s ------------------------------", _idx, _iidx, _display_idx)
-
             # JSONファイルを読み直す
             _file = os.path.join(openpose_output_dir, openpose_filenames[_iidx])
             if not os.path.isfile(_file): raise Exception("No file found!!, {0}".format(_file))
@@ -300,6 +302,8 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
             except Exception as e:
                 logger.warn("JSON読み込み失敗のため、空データ読み込み, %s %s", _file, e)
                 data = json.load(open("tensorflow/json/all_empty_keypoints.json"))
+
+            logger.info("人体別処理: idx: %s, iidx: %s file: %s ------", _idx, _iidx, openpose_filenames[_iidx])
 
             # 人数を計算
             _len = len(data["people"])
@@ -326,6 +330,10 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                     logger.info("今回データなしの為、前回ソート順流用 _iidx: %s(%s)", _iidx, _display_idx)
                     sorted_idxs[_iidx], is_all_reverses[_iidx], is_upper_reverses[_iidx], is_lower_reverses[_iidx] = copy.deepcopy(sorted_idxs[_iidx - 1]), copy.deepcopy(is_all_reverses[_iidx - 1]), copy.deepcopy(is_upper_reverses[_iidx]), copy.deepcopy(is_lower_reverses[_iidx])
                 else:
+                    # 片足寄せであるか計算（片寄せの場合、足の信頼度ゼロ）
+                    if _iidx in reverse_frame_dict:
+                        is_onesides[_iidx] = calc_oneside(sorted_idxs[_iidx - 1], past_data, data["people"], True)
+                    
                     if _iidx in order_specific_dict:
                         # 順番指定リストに該当フレームがある場合
                         for key_idx, person_idx in enumerate(order_specific_dict[_iidx]):
@@ -381,9 +389,9 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
 
                     if _iidx == 0 or _iidx % interval == 0:
                         # 深度データ
-                        depth_path = '{0}/{1}_{3}_idx{2:02d}/depth.txt'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str)
+                        depth_idx_path = '{0}/{1}_{3}_idx{2:02d}/depth.txt'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str)
                         # 追記モードで開く
-                        depthf = open(depth_path, 'a')
+                        depthf = open(depth_idx_path, 'a')
                         pred_ary = [ str(0) for x in range(18) ]
                         # 一行分を追記
                         depthf.write("{0}, {1}\n".format(_iidx, ','.join(pred_ary)))
@@ -391,6 +399,9 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
 
                     now_data[pidx] = outputdata
             else:
+                if _iidx in reverse_frame_dict:
+                    logger.debug("反転判定対象フレーム: %s(%s)", _iidx, _display_idx)
+
                 # 何らかのデータがある場合
                 for pidx in range(people_size):
                     # 一旦空データを読む
@@ -399,8 +410,63 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                     # 出力対象となるpeople内のINDEX
                     sidx = sorted_idxs[_iidx][pidx]
 
-                    # サイズが足りない場合、空データを出力する
-                    targetdata = data["people"][sidx]["pose_keypoints_2d"]
+                    # とりあえず何らかのデータがある場合
+                    # 過去データ
+                    past_pidx_data = past_data[pidx]["pose_keypoints_2d"]
+                    # 現在データ(sidxで振り分け済み)
+                    now_sidx_data = data["people"][sidx]["pose_keypoints_2d"]
+
+                    for o in range(0,len(now_sidx_data),3):
+                        if now_sidx_data[o] == now_sidx_data[o+1] == 0 and int(o/3) in [0,1,2,3,4,5,6,7,8,9,10,11,12,13]:
+                            logger.debug("過去PU: pidx: %s, o: %s", pidx, o/3)
+                            # XもYも0の場合、過去から引っ張ってくる（頭部は引っ張ってこない）
+                            # is_now_upper_reversedはまだ判定してないので前フレームの反転結果
+                            if is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx]:
+                                # 反転している場合、反転INDEX(全身)
+                                now_sidx_data[o] = past_pidx_data[OPENPOSE_REVERSE_ALL[int(o/3)]*3]
+                                now_sidx_data[o+1] = past_pidx_data[OPENPOSE_REVERSE_ALL[int(o/3)]*3+1]
+                                now_sidx_data[o+2] = past_pidx_data[OPENPOSE_REVERSE_ALL[int(o/3)]*3+2]
+                                # logger.debug("全反: o: %s, revo: %s, org: %s, rev: %s", o, OPENPOSE_REVERSE_ALL[int(o/3)]*3, past_pidx_data[o], past_pidx_data[OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+                            elif is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx] == False :
+                                # logger.debug("反: %s", data["people"][sidx]["pose_keypoints_2d"][OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+                                # 反転している場合、反転INDEX(上半身)
+                                now_sidx_data[o] = past_pidx_data[OPENPOSE_REVERSE_UPPER[int(o/3)]*3]
+                                now_sidx_data[o+1] = past_pidx_data[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+1]
+                                now_sidx_data[o+2] = past_pidx_data[OPENPOSE_REVERSE_UPPER[int(o/3)]*3+2]
+                                # logger.debug("上反: o: %s, revo: %s, org: %s, rev: %s", o, OPENPOSE_REVERSE_UPPER[int(o/3)]*3, past_pidx_data[o], past_pidx_data[OPENPOSE_REVERSE_UPPER[int(o/3)]*3])
+                            elif is_now_upper_reversed[pidx] == False and is_now_lower_reversed[pidx]:
+                                # logger.debug("反: %s", data["people"][sidx]["pose_keypoints_2d"][OPENPOSE_REVERSE_ALL[int(o/3)]*3])
+                                # 反転している場合、反転INDEX(下半身)
+                                now_sidx_data[o] = past_pidx_data[OPENPOSE_REVERSE_LOWER[int(o/3)]*3]
+                                now_sidx_data[o+1] = past_pidx_data[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+1]
+                                now_sidx_data[o+2] = past_pidx_data[OPENPOSE_REVERSE_LOWER[int(o/3)]*3+2]
+                                # logger.debug("下反: o: %s, revo: %s, org: %s, rev: %s", o, OPENPOSE_REVERSE_LOWER[int(o/3)]*3, past_pidx_data[o], past_pidx_data[OPENPOSE_REVERSE_LOWER[int(o/3)]*3])
+                            else:
+                                # logger.debug("正: %s", data["people"][sidx]["pose_keypoints_2d"][o])
+                                now_sidx_data[o] = past_pidx_data[o]
+                                now_sidx_data[o+1] = past_pidx_data[o+1]
+                                now_sidx_data[o+2] = past_pidx_data[o+2]
+                                                        
+                            # data["people"][sidx]["pose_keypoints_2d"][o] = past_data[pidx]["pose_keypoints_2d"][o]
+                            # data["people"][sidx]["pose_keypoints_2d"][o+1] = past_data[pidx]["pose_keypoints_2d"][o+1]
+                            # data["people"][sidx]["pose_keypoints_2d"][o+2] = past_data[pidx]["pose_keypoints_2d"][o+2]
+
+                    if _iidx > 0 and _iidx in reverse_frame_dict:
+                        # 前回のINDEX
+                        past_sidx = sorted_idxs[_iidx - 1][pidx]
+
+                        # 前回のXYと深度から近いindexを算出
+                        # 埋まってない部分を補完して、改めて反転再算出
+                        # past_dataは表示順に並べ直しているので、pidx。深度は並べ直していないのでsidx
+                        # 既に並べ終わってるので、少し上げ底して厳しめにチェックする
+                        _, is_retake_all_reverses, is_retake_upper_reverses, is_retake_lower_reverses = \
+                            calc_nearest_idxs([0], [past_data[pidx]], [data["people"][sidx]], [pred_multi_ary[past_depth_idx][past_sidx]], [pred_multi_ary[next_depth_idx][sidx]], 0.03)
+                        
+                        logger.debug("反転再チェック: _iidx: %s, pidx: %s, all: %s, upper: %s, lower: %s", _iidx, pidx, is_retake_all_reverses[0], is_retake_upper_reverses[0], is_retake_lower_reverses[0])
+
+                        is_all_reverses[_iidx][pidx] = is_retake_all_reverses[0]
+                        is_upper_reverses[_iidx][pidx] = is_retake_upper_reverses[0]
+                        is_lower_reverses[_iidx][pidx] = is_retake_lower_reverses[0]
 
                     # 出力対象となるpeople内のINDEX反転有無
                     is_all_reverse = is_all_reverses[_iidx][pidx]
@@ -410,7 +476,15 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                     is_lower_reverse = is_lower_reverses[_iidx][pidx]
 
                     if _iidx in reverse_frame_dict:
-                        logger.debug("反転判定対象フレーム: %s(%s)", _iidx, _display_idx)
+
+                        if _iidx > 0:
+                            # 片寄せ有無(入れ替えた後なので、sidx参照)
+                            if is_onesides[_iidx][sidx]:
+                                # 片寄せの場合、前回を引き継ぐ
+                                is_all_reverses[_iidx][pidx] = is_all_reverses[_iidx-1][pidx]
+                                is_upper_reverses[_iidx][pidx] = is_upper_reverses[_iidx-1][pidx]
+                                is_lower_reverses[_iidx][pidx] = is_lower_reverses[_iidx-1][pidx]
+
                         if is_upper_reverse:
                             # 出力対象が反転の場合、現在の状態から反転させる(上半身)
                             is_now_upper_reversed[pidx] = not(is_now_upper_reversed[pidx])
@@ -434,18 +508,18 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                         is_now_upper_reversed[pidx] = False
                         is_now_lower_reversed[pidx] = False
                         
-                    logger.debug("is_now_upper_reversed: %s, is_now_lower_reversed: %s", is_now_upper_reversed, is_now_lower_reversed)
+                    logger.debug("pidx: %s, is_now_upper_reversed: %s, is_now_lower_reversed: %s", pidx, is_now_upper_reversed[pidx], is_now_lower_reversed[pidx])
 
-                    # トレース失敗の場合、クリア
-                    if (is_all_reverse == False and (is_upper_reverse or (is_upper_reverse == False and is_now_upper_reversed[pidx] ))) and (targetdata[2*3] == 0 or targetdata[3*3] == 0 or targetdata[5*3] == 0 or targetdata[6*3] == 0) :
-                        logger.debug("上半身ひじまでのトレース失敗のため、上半身反転フラグクリア %s(%s) data: %s", _iidx, _display_idx, targetdata)
-                        is_upper_reverses[_iidx][pidx] = False
-                        is_now_upper_reversed[pidx] = False
+                    # # トレース失敗の場合、クリア
+                    # if (is_all_reverse == False and (is_upper_reverse or (is_upper_reverse == False and is_now_upper_reversed[pidx] ))) and (targetdata[2*3] == 0 or targetdata[3*3] == 0 or targetdata[5*3] == 0 or targetdata[6*3] == 0) :
+                    #     logger.debug("上半身ひじまでのトレース失敗のため、上半身反転フラグクリア %s(%s) data: %s", _iidx, _display_idx, targetdata)
+                    #     is_upper_reverses[_iidx][pidx] = False
+                    #     is_now_upper_reversed[pidx] = False
 
-                    if (is_all_reverse == False or (is_lower_reverse or (is_lower_reverse == False and is_now_lower_reversed[pidx] ))) and (targetdata[8*3] == 0 or targetdata[9*3] == 0 or targetdata[11*3] == 0 or targetdata[12*3] == 0) :
-                        logger.debug("下半身ひざまでのトレース失敗のため、下半身反転フラグクリア %s(%s) data: %s", _iidx, _display_idx, targetdata)
-                        is_lower_reverses[_iidx][pidx] = False
-                        is_now_lower_reversed[pidx] = False
+                    # if (is_all_reverse == False or (is_lower_reverse or (is_lower_reverse == False and is_now_lower_reversed[pidx] ))) and (targetdata[8*3] == 0 or targetdata[9*3] == 0 or targetdata[11*3] == 0 or targetdata[12*3] == 0) :
+                    #     logger.debug("下半身ひざまでのトレース失敗のため、下半身反転フラグクリア %s(%s) data: %s", _iidx, _display_idx, targetdata)
+                    #     is_lower_reverses[_iidx][pidx] = False
+                    #     is_now_lower_reversed[pidx] = False
 
                     logger.debug("is_now_upper_reversed: %s, is_now_lower_reversed: %s", is_now_upper_reversed, is_now_lower_reversed)
 
@@ -458,6 +532,8 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                             file_logger.warn("※※{0:05d}F目 {1}番目の人物、上半身反転 [{2}:{3}]".format( _iidx, first_sorted_idxs[pidx], _iidx, first_sorted_idxs[pidx]))
                         elif is_now_upper_reversed[pidx] == False and is_now_lower_reversed[pidx]:
                             file_logger.warn("※※{0:05d}F目 {1}番目の人物、下半身反転 [{2}:{3}]".format( _iidx, first_sorted_idxs[pidx], _iidx, first_sorted_idxs[pidx]))
+
+                    targetdata = data["people"][sidx]["pose_keypoints_2d"]
 
                     for o in range(0,len(outputdata["people"][0]["pose_keypoints_2d"]),3):
                         if is_now_upper_reversed[pidx] and is_now_lower_reversed[pidx]:
@@ -485,13 +561,28 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                             outputdata["people"][0]["pose_keypoints_2d"][o] = targetdata[o]
                             outputdata["people"][0]["pose_keypoints_2d"][o+1] = targetdata[o+1]
                             outputdata["people"][0]["pose_keypoints_2d"][o+2] = targetdata[o+2]
-
+                        
                         if outputdata["people"][0]["pose_keypoints_2d"][o] > orig_width or outputdata["people"][0]["pose_keypoints_2d"][o] < 0 \
                             or outputdata["people"][0]["pose_keypoints_2d"][o+1] > orig_height or outputdata["people"][0]["pose_keypoints_2d"][o+1] < 0 :
                             # 画像範囲外のデータが取れた場合、とりあえず0を入れ直す
                             outputdata["people"][0]["pose_keypoints_2d"][o] = 0
                             outputdata["people"][0]["pose_keypoints_2d"][o+1] = 0
                             outputdata["people"][0]["pose_keypoints_2d"][o+2] = 0
+
+                    if _iidx > 0 and _iidx in reverse_frame_dict:
+                        # 出力データでもう一度片足寄せであるか計算
+                        is_result_oneside = calc_oneside([0], [past_data[pidx]], outputdata["people"])
+
+                        if True in is_result_oneside:
+                            # 片寄せの可能性がある場合、前回データをコピー
+                            file_logger.warn("※※{0:05d}F目 {1}番目の人物、片寄せ可能性あり".format( _iidx, first_sorted_idxs[_iidx]))
+
+                            for _lidx, _lval in enumerate([8,9,10,11,12,13]):
+                                outputdata["people"][0]["pose_keypoints_2d"][_lval*3] = past_data[pidx]["pose_keypoints_2d"][_lval*3]
+                                outputdata["people"][0]["pose_keypoints_2d"][_lval*3+1] = past_data[pidx]["pose_keypoints_2d"][_lval*3+1]
+                                # 信頼度は半分
+                                conf = past_data[pidx]["pose_keypoints_2d"][_lval*3+2]/2
+                                outputdata["people"][0]["pose_keypoints_2d"][o+2] = conf if 0 < conf < 1 else 0.3
                             
                     logger.debug("outputdata %s", outputdata["people"][0]["pose_keypoints_2d"])
 
@@ -505,9 +596,9 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
 
                     if _iidx % interval == 0:
                         # 深度データ
-                        depth_path = '{0}/{1}_{3}_idx{2:02d}/depth.txt'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str)
+                        depth_idx_path = '{0}/{1}_{3}_idx{2:02d}/depth.txt'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), first_sorted_idxs[pidx]+1, now_str)
                         # 追記モードで開く
-                        depthf = open(depth_path, 'a')
+                        depthf = open(depth_idx_path, 'a')
                         # 深度データを文字列化する
                         # logger.debug("pred_multi_ary[_idx]: %s", pred_multi_ary[_idx])
                         # logger.debug("pred_multi_ary[_idx][sidx]: %s", pred_multi_ary[_idx][sidx])
@@ -566,7 +657,7 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                         # とりあえず何らかのデータがある場合
                         for o in range(0,len(now_data[pidx]["pose_keypoints_2d"]),3):
                             if now_data[pidx]["pose_keypoints_2d"][o] == now_data[pidx]["pose_keypoints_2d"][o+1] == 0:
-                                # logger.debug("過去PU: pidx: %s, o: %s", pidx, o)
+                                logger.debug("過去PU: pidx: %s, o: %s", pidx, o)
                                 # XもYも0の場合、過去から引っ張ってくる
                                 now_data[pidx]["pose_keypoints_2d"][o] = past_data[pidx]["pose_keypoints_2d"][o]
                                 now_data[pidx]["pose_keypoints_2d"][o+1] = past_data[pidx]["pose_keypoints_2d"][o+1]
@@ -590,6 +681,81 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
     # 終わったら後処理
     cap.release()
     cv2.destroyAllWindows()
+
+    if is_avi_output:
+        # MMD用AVI出力 -----------------------------------------------------
+        for fourcc_name in ["IYUV"]:
+            try:
+                # コーデックは実行環境によるので、自環境のMMDで確認できたfourccを総当たり
+                # FIXME IYUVはAVI2なので、1GBしか読み込めない。ULRGは出力がULY0になってMMDで動かない。とりあえずIYUVを1GB以内で出力する
+                fourcc = cv2.VideoWriter_fourcc(*fourcc_name)
+                # 出力先AVIを設定する（MMD用に小さめ)
+                out_path = '{0}/output_{1}.avi'.format(depth_path, fourcc_name)
+
+                avi_width = int(width*0.7)
+                avi_height = int(height*0.7)
+
+                out = cv2.VideoWriter(out_path, fourcc, 30.0, (avi_width, avi_height))
+                
+                op_avi_path = re.sub(r'_json$', "_openpose.avi", openpose_output_dir)
+                logger.debug("op_avi_path: %s", op_avi_path)
+                # Openopse結果AVIを読み込む
+                cnt = 0
+                cap = cv2.VideoCapture(op_avi_path)
+
+                while(cap.isOpened()):
+                    # 動画から1枚キャプチャして読み込む
+                    flag, frame = cap.read()  # Capture frame-by-frame
+
+                    # 動画が終わっていたら終了
+                    if flag == False:
+                        break
+
+                    for pidx, lcolor, rcolor in zip(range(people_size) \
+                            , [(51,255,51), (255,51,51), (255,255,255), (51,255,255), (255,51,255), (255,255,51), (0,255,0), (255,0,0), (255,255,255), (0,255,255), (255,0,255), (255,255,0)] \
+                            , [(51,51,255), (51,51,255),   (51,51,255),  (51,51,255),  (51,51,255),  (51,51,255), (0,0,255), (0,0,255),     (0,0,255),   (0,0,255),   (0,0,255),   (0,0,255)]):
+                        # 人物別に色を設定, colorはBGR形式
+                        idx_json_path = '{0}/{1}_{3}_idx{2:02d}/json/{4}'.format(os.path.dirname(openpose_output_dir), os.path.basename(openpose_output_dir), pidx+1, now_str, re.sub(r'\d{12}', "{0:012d}".format(cnt + start_frame), first_file_name))
+                        # logger.warn("pidx: %s, color: %s, idx_json_path: %s", pidx, color, idx_json_path)
+
+                        if os.path.isfile(idx_json_path):
+                            data = json.load(open(idx_json_path))
+
+                            for o in range(0,len(data["people"][0]["pose_keypoints_2d"]),3):
+                                # 左右で色を分ける
+                                color = rcolor if int(o/3) in [0,1,2,3,4,8,9,10,14,16] else lcolor
+
+                                if data["people"][0]["pose_keypoints_2d"][o+2] > 0:
+                                    # 少しでも信頼度がある場合出力
+                                    # logger.debug("x: %s, y: %s", data["people"][0]["pose_keypoints_2d"][o], data["people"][0]["pose_keypoints_2d"][o+1])
+                                    # cv2.drawMarker( frame, (int(data["people"][0]["pose_keypoints_2d"][o]+5), int(data["people"][0]["pose_keypoints_2d"][o+1]+5)), color, markerType=cv2.MARKER_TILTED_CROSS, markerSize=10)
+                                    # 座標のXY位置に点を置く。原点が左上なので、ちょっとずらす
+                                    cv2.circle( frame, (int(data["people"][0]["pose_keypoints_2d"][o]+1), int(data["people"][0]["pose_keypoints_2d"][o+1]+1)), 5, color, thickness=-1)
+                    
+                    # 縮小
+                    output_frame = cv2.resize(frame, (avi_width, avi_height))
+
+                    # 全人物が終わったら出力
+                    out.write(output_frame)
+
+                    # インクリメント
+                    cnt += 1
+
+                logger.info('MMD用AVI: {0}'.format(out_path))
+
+                # 出力に成功したら終了
+                # break
+            except Exception as e:
+                logger.warn("MMD用AVI出力失敗: %s, %s", fourcc_name, e)
+
+            finally:
+                # 終わったら開放
+                cap.release()
+                out.release()
+                cv2.destroyAllWindows()
+
+
+
 
 # 0F目を左から順番に並べた人物INDEXを取得する
 def sort_first_idxs(now_datas):
@@ -659,6 +825,52 @@ def sort_first_idxs(now_datas):
                         break
 
     return result_nearest_idxs
+
+# 前回のXYから片足寄せであるか判断する
+def calc_oneside(past_sorted_idxs, past_data, now_data, is_oneside_reset=False):
+    # ひざと足首のペア
+    LEG_IDXS = [[9,12],[10,13]]
+
+    # 過去のX位置データ
+    is_past_oneside = False
+    for _pidx, _idx in enumerate(past_sorted_idxs):
+        past_xyc = past_data[_idx]["pose_keypoints_2d"]
+
+        for _lidx, _lvals in enumerate(LEG_IDXS):
+            logger.debug("past _idx: %s, _lidx: %s, %sx: %s, %sx: %s, %sy: %s, %sy:%s", _idx, _lidx, _lvals[0], past_xyc[_lvals[0]*3], _lvals[1], past_xyc[_lvals[1]*3], _lvals[0], past_xyc[_lvals[0]*3+1], _lvals[1], past_xyc[_lvals[1]*3+1])
+            
+            if past_xyc[_lvals[0]*3] > 0 and past_xyc[_lvals[1]*3] > 0 and past_xyc[_lvals[0]*3+1] > 0 and past_xyc[_lvals[1]*3+1] > 0 \
+                and abs(past_xyc[_lvals[0]*3] - past_xyc[_lvals[1]*3]) < 5 and abs(past_xyc[_lvals[0]*3+1] - past_xyc[_lvals[1]*3+1]) < 5:
+                logger.debug("過去片寄せ: %s(%s), (%s,%s), (%s,%s)", _pidx, _lidx, past_xyc[_lvals[0]*3], past_xyc[_lvals[1]*3], past_xyc[_lvals[0]*3+1], past_xyc[_lvals[1]*3+1] )
+                # 誰かの足が片寄せっぽいならば、FLG＝ON
+                is_past_oneside = True
+
+    is_onesides = [ False for x in range(len(now_data)) ]
+    # 今回のX位置データ
+    for _idx in range(len(now_data)):
+        now_xyc = now_data[_idx]["pose_keypoints_2d"]
+
+        is_now_oneside_cnt = 0
+        for _lidx, _lvals in enumerate(LEG_IDXS):
+            logger.debug("now _idx: %s, _lidx: %s, %sx: %s, %sx: %s, %sy: %s, %sy:%s", _idx, _lidx, _lvals[0], now_xyc[_lvals[0]*3], _lvals[1], now_xyc[_lvals[1]*3], _lvals[0], now_xyc[_lvals[0]*3+1], _lvals[1], now_xyc[_lvals[1]*3+1])
+
+            if now_xyc[_lvals[0]*3] > 0 and now_xyc[_lvals[1]*3] > 0 and now_xyc[_lvals[0]*3+1] > 0 and now_xyc[_lvals[1]*3+1] > 0 \
+                and abs(now_xyc[_lvals[0]*3] - now_xyc[_lvals[1]*3]) < 5 and abs(now_xyc[_lvals[0]*3+1] - now_xyc[_lvals[1]*3+1]) < 5:
+                # 両ひざ、両足首のX位置、Y位置がほぼ同じである場合
+                logger.debug("現在片寄せ: %s(%s), (%s,%s), (%s,%s)", _idx, _lidx, now_xyc[_lvals[0]*3], now_xyc[_lvals[1]*3], now_xyc[_lvals[0]*3+1], now_xyc[_lvals[1]*3+1] )
+                is_now_oneside_cnt += 1
+        
+        if is_now_oneside_cnt > 0 and is_past_oneside == False:
+            for _lidx, _lval in enumerate([8,9,10,11,12,13]):
+                # フラグを立てる
+                is_onesides[_idx] == True
+                # リセットFLG＝ONの場合、足の位置を一旦全部クリア
+                if is_oneside_reset:
+                    now_xyc[_lval*3] = 0
+                    now_xyc[_lval*3+1] = 0
+                    now_xyc[_lval*3+2] = 0
+
+    return is_onesides
 
 
 # 左右反転させたINDEX
@@ -731,7 +943,7 @@ OPENPOSE_REVERSE_LOWER = {
 }
 
 # 前回のXYと深度から近いindexを算出
-def calc_nearest_idxs(past_sorted_idxs, past_data, now_data, past_pred_ary, now_pred_ary):
+def calc_nearest_idxs(past_sorted_idxs, past_data, now_data, past_pred_ary, now_pred_ary, limit_correction=0.0):
     # logger.debug("past_data: %s", past_data)
     
     # 前回の人物データ(前回のソート順に対応させる)
@@ -893,13 +1105,12 @@ def calc_nearest_idxs(past_sorted_idxs, past_data, now_data, past_pred_ary, now_
 
     # logger.debug("past_pred_ary: %s", past_pred_ary)
     # logger.debug("now_pred_ary: %s", now_pred_ary)
-
     # XY正の判定用
-    XY_LIMIT = 0.73
+    XY_LIMIT = 0.73 + limit_correction
     # XY上半身・下半身のみ反転用。やや厳しめ
-    REV_LIMIT = 0.83
+    REV_LIMIT = 0.83 + limit_correction
     # 深度判定用。甘め
-    D_LIMIT = 0.61
+    D_LIMIT = 0.61 + limit_correction
     # 信頼度の低い順の逆順(信頼度降順)に人物を当てはめていく
     cidx = len(conf_idxs) - 1
     cidxcnt = 0
@@ -1195,7 +1406,7 @@ def calc_most_common_idxs(conf_idxs, now_x, now_y, now_confs, past_x_ary, past_y
 def calc_one_dimensional_most_common_idxs(dimensional, conf_idxs, now_datas, now_confs, past_datas, past_confs, now_nearest_idxs, idx_target=None):
     # 過去データの当該関節で、現在データと最も近いINDEXのリストを生成
     most_common_idxs = []
-    th = 0.3
+    th = 0.1
 
     # # 位置データ(全身＋手足)
     # for _idx in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,2,3,4,5,6,7,8,9,10,11,12,13]:
@@ -1566,6 +1777,7 @@ def main():
     parser.add_argument('--interval', dest='interval', help='interval', type=int)
     parser.add_argument('--reverse_frames', dest='reverse_frames', help='reverse_frames', default="", type=str)
     parser.add_argument('--order_specific', dest='order_specific', help='order_specific', default="", type=str)
+    parser.add_argument('--avi_output', dest='avi_output', help='avi_output', default='yes', type=str)
     parser.add_argument('--verbose', dest='verbose', help='verbose', type=int)
     args = parser.parse_args()
 
@@ -1573,6 +1785,9 @@ def main():
 
     # 間隔は1以上の整数
     interval = args.interval if args.interval > 0 else 1
+
+    # AVI出力有無
+    is_avi_output = False if args.avi_output == 'no' else True
 
     # 出力用日付
     if args.now is None:
@@ -1641,8 +1856,15 @@ def main():
     start_frame, openpose_2d, openpose_filenames = read_openpose_json(args.json_path)
     logger.info("開始フレームインデックス: %d", start_frame)
 
+
+    op_avi_path = re.sub(r'_json$', "_openpose.avi", args.json_path)
+    logger.debug("op_avi_path: %s", op_avi_path)
+    # Openopse結果AVIを読み込む
+    cnt = 0
+    cap = cv2.VideoCapture(op_avi_path)
+
     # Predict the image
-    predict_video(now_str, args.model_path, args.video_path, depth_path, interval, args.json_path, openpose_2d, openpose_filenames, start_frame, reverse_frame_dict, order_specific_dict, args.verbose)
+    predict_video(now_str, args.model_path, args.video_path, depth_path, interval, args.json_path, openpose_2d, openpose_filenames, start_frame, reverse_frame_dict, order_specific_dict, is_avi_output, args.verbose)
 
     logger.info("Done!!")
     logger.info("深度推定結果: {0}".format(depth_path +'/depth.txt'))

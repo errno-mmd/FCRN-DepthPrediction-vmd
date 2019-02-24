@@ -58,6 +58,15 @@ echo [10:1,0][30:0,1]のように、カッコ単位で複数件指定可能です。
 echo 例）[10-15:1,0][30:0,1]　…　10～15F目: 1, 0の順番、30F目: 0, 1の順番。
 set /P ORDER_SPECIFIC_LIST="■順番指定リスト: "
 
+rem ---  MMD用AVI出力
+echo --------------
+echo MMD用AVIを出すか、yes か no を入力して下さい。
+echo MMD用AVIは、Openposeの結果に、人物INDEX別情報を乗せて、サイズ小さめで出力します。
+echo コーデックは「IYUV」「I420」のいずれかです。
+echo 何も入力せず、ENTERを押下した場合、MMD用AVIを出力します。
+set AVI_OUTPUT=yes
+set /P AVI_OUTPUT="■MMD用AVI[yes/no]: "
+
 rem ---  詳細ログ有無
 echo --------------
 echo 詳細なログを出すか、yes か no を入力して下さい。
@@ -76,6 +85,6 @@ IF /I "%IS_DEBUG%" EQU "warn" (
 )
 
 rem ---  python 実行
-python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_frames "%REVERSE_FRAME_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --verbose %VERBOSE%
+python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_frames "%REVERSE_FRAME_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --avi_output %AVI_OUTPUT% --verbose %VERBOSE%
 
 
