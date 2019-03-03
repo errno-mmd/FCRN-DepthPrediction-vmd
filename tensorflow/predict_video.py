@@ -410,8 +410,6 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                 data["people"].append(json.load(open("tensorflow/json/one_keypoints.json")))
                 org_data["people"].append(json.load(open("tensorflow/json/one_keypoints.json")))
 
-            logger.warn("len(org_data[people]): %s", len(org_data["people"]))
-
             # インデックス出力 ------------------------------
             if _len <= 0:
                 logger.debug("空データ出力 %s %s", _iidx, _len)
