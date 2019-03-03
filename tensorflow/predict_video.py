@@ -319,7 +319,7 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
 
             for i in range(len(data["people"]), people_size):
                 # 足りない分は空データを埋める
-                data["people"].append(json.load(open("tensorflow/json/empty_keypoints.json")))
+                data["people"].append(json.load(open("tensorflow/json/one_keypoints.json")))
 
             logger.info("人体別処理: idx: %s, iidx: %s file: %s ------",
                         _idx, _iidx, openpose_filenames[_iidx])
@@ -407,7 +407,7 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
 
             for i in range(len(data["people"]), people_size):
                 # 足りない分は空データを埋める
-                data["people"].append(json.load(open("tensorflow/json/empty_keypoints.json")))
+                data["people"].append(json.load(open("tensorflow/json/one_keypoints.json")))
 
             # インデックス出力 ------------------------------
             if _len <= 0:
