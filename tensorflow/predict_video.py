@@ -405,10 +405,12 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
             # 過去を引き継いだ現在データ
             all_now_data = [[] for x in range(people_size)]
 
-            for i in range(len(data["people"]), people_size):
+            for i in range(_len, people_size):
                 # 足りない分は空データを埋める
                 data["people"].append(json.load(open("tensorflow/json/one_keypoints.json")))
                 org_data["people"].append(json.load(open("tensorflow/json/one_keypoints.json")))
+
+            logger.warn("len(org_data[people]): %s", len(org_data["people"]))
 
             # インデックス出力 ------------------------------
             if _len <= 0:
