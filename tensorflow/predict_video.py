@@ -730,7 +730,7 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                     op_avi_path = re.sub(r'json$', "openpose.avi", openpose_output_dir)
                 else:
                     op_avi_path = re.sub(r'json/?', "openpose.avi", openpose_output_dir)
-                logger.warn("op_avi_path: %s", op_avi_path)
+                logger.debug("op_avi_path: %s", op_avi_path)
                 # Openopse結果AVIを読み込む
                 cnt = 0
                 cap = cv2.VideoCapture(op_avi_path)
