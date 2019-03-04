@@ -724,8 +724,7 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
 
                 out = cv2.VideoWriter(out_path, fourcc, 30.0, (avi_width, avi_height))
                 
-                op_avi_path = re.sub(r'_json$', "_openpose.avi", openpose_output_dir)
-                # op_avi_path = re.sub(r'_json$', ".mp4", openpose_output_dir)
+                op_avi_path = re.sub(r'json$', "openpose.avi", openpose_output_dir)
                 logger.debug("op_avi_path: %s", op_avi_path)
                 # Openopse結果AVIを読み込む
                 cnt = 0
