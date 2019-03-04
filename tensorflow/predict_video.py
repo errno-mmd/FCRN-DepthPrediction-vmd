@@ -708,6 +708,7 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
         fourcc_names = ["I420"]
 
         if os.name == "nt":
+            # Windows
             fourcc_names = ["IYUV"]
 
         # MMD用AVI出力 -----------------------------------------------------
@@ -724,8 +725,12 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
 
                 out = cv2.VideoWriter(out_path, fourcc, 30.0, (avi_width, avi_height))
                 
-                op_avi_path = re.sub(r'json$', "openpose.avi", openpose_output_dir)
-                logger.debug("op_avi_path: %s", op_avi_path)
+                if os.name == "nt":
+                    # Windows
+                    op_avi_path = re.sub(r'json$', "openpose.avi", openpose_output_dir)
+                else:
+                    op_avi_path = re.sub(r'json', "openpose.avi", openpose_output_dir)
+                logger.warn("op_avi_path: %s", op_avi_path)
                 # Openopse結果AVIを読み込む
                 cnt = 0
                 cap = cv2.VideoCapture(op_avi_path)
