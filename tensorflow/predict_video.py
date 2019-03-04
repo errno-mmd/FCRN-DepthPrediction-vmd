@@ -704,8 +704,14 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
     cv2.destroyAllWindows()
 
     if is_avi_output:
+
+        fourcc_names = ["I420"]
+
+        if os.name == "nt":
+            fourcc_names = ["IYUV"]
+
         # MMD用AVI出力 -----------------------------------------------------
-        for fourcc_name in ["IYUV"]:
+        for fourcc_name in fourcc_names:
             try:
                 # コーデックは実行環境によるので、自環境のMMDで確認できたfourccを総当たり
                 # FIXME IYUVはAVI2なので、1GBしか読み込めない。ULRGは出力がULY0になってMMDで動かない。とりあえずIYUVを1GB以内で出力する
