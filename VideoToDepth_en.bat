@@ -30,6 +30,15 @@ IF /I "%OPENPOSE_JSON%" EQU "" (
     EXIT /B
 )
 
+rem ---  Maximum number of people in the image
+
+echo --------------
+echo Please enter the maximum number of people shown in the image.
+echo If you do not enter anything and press ENTER, it will be analysis for one person.
+echo If you specify only one person in the image of which the number of people is the same size, the analysis subject may jump.
+set NUMBER_PEOPLE_MAX=1
+set /P NUMBER_PEOPLE_MAX="** Maximum number of people shown in the image:"
+
 rem ---  Depth estimation interval
 echo --------------
 set DEPTH_INTERVAL=10
@@ -77,6 +86,6 @@ IF /I "%IS_DEBUG%" EQU "warn" (
 )
 
 rem ---  python é¿çs
-python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_frames "%REVERSE_FRAME_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --verbose %VERBOSE%
+python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --number_people_max %NUMBER_PEOPLE_MAX% --reverse_frames "%REVERSE_FRAME_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --verbose %VERBOSE%
 
 
