@@ -1780,7 +1780,6 @@ def read_openpose_json(openpose_output_dir, number_people_max, depth_path):
             if _len < number_people_max:
                 logger.error("【ERROR】 最初のフレームに人数分のデータがありません。")
                 # 0F目が人数分ない場合、エラー
-                # 追記モードで開く
                 errorf = open( depth_path + "/error.txt", 'w')
                 errorf.write("最初のフレームに人数分のデータがありません。\n")
                 errorf.write("There is no data for the number of people in the first frame.\n")
@@ -1788,7 +1787,7 @@ def read_openpose_json(openpose_output_dir, number_people_max, depth_path):
                 sys.exit()
 
             # 最初のフレームはそのまま登録するため、INDEXをそのまま指定
-            for pidx in range(_len):
+            for pidx in range(number_people_max):
                 _multi_data.append(data["people"][pidx]["pose_keypoints_2d"])
 
             # 開始したらフラグを立てる
@@ -1904,6 +1903,11 @@ def main():
     else:
         now_str = args.now
 
+    # 日付+depthディレクトリ作成
+    depth_path = '{0}/{1}_{2}_depth'.format(os.path.dirname(args.json_path), os.path.basename(args.json_path), now_str)
+    
+    os.makedirs(depth_path)
+
     # 反転判定用辞書作成
     reverse_frame_dict = {}
     if args.reverse_frames is not None and len(args.reverse_frames) > 0:
@@ -1926,6 +1930,10 @@ def main():
                 logger.warn("反転フレーム範囲指定失敗: [%s]", frame)
 
         logger.info("反転フレームリスト: %s", reverse_frame_dict.keys())
+
+        paramf = open( depth_path + "/reverse_frames.txt", 'w')
+        paramf.write(args.reverse_frames)
+        paramf.close()
 
     # 強制順番指定用辞書作成
     order_specific_dict = {}
@@ -1952,14 +1960,12 @@ def main():
 
                         for person_idx in frame.split(':')[1].split(','):
                             order_specific_dict[int(frames)].append(int(person_idx))
-                
 
         logger.info("順番指定リスト: %s", order_specific_dict)
 
-    # 日付+depthディレクトリ作成
-    depth_path = '{0}/{1}_{2}_depth'.format(os.path.dirname(args.json_path), os.path.basename(args.json_path), now_str)
-    
-    os.makedirs(depth_path)
+        paramf = open( depth_path + "/order_specific.txt", 'w')
+        paramf.write(args.order_specific)
+        paramf.close()
 
     # 関節二次元データを取得
     start_frame, openpose_2d, openpose_filenames = read_openpose_json(args.json_path, args.number_people_max, depth_path)
