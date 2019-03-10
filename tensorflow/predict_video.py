@@ -746,8 +746,8 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                 # 出力先AVIを設定する（MMD用に小さめ)
                 out_path = '{0}/output_{1}.avi'.format(depth_path, fourcc_name)
 
-                avi_width = int(width*0.7)
-                avi_height = int(height*0.7)
+                avi_width = int(width*0.68)
+                avi_height = int(height*0.68)
 
                 out = cv2.VideoWriter(out_path, fourcc, 30.0, (avi_width, avi_height))
                 
