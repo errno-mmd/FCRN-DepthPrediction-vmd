@@ -30,6 +30,14 @@ IF /I "%OPENPOSE_JSON%" EQU "" (
     EXIT /B
 )
 
+rem ---  Depth estimation interval
+echo --------------
+set DEPTH_INTERVAL=10
+echo Please enter the interval of the frame to be estimated depth.
+echo The smaller the value, the finer the depth estimation. (It takes time to do so)
+echo If nothing is entered and ENTER is pressed, processing is done at the interval of "%DEPTH_INTERVAL%".
+set /P DEPTH_INTERVAL="** Depth estimation interval: "
+
 rem ---  Maximum number of people in the image
 
 echo --------------
@@ -39,33 +47,49 @@ echo If you specify only one person in the image of which the number of people i
 set NUMBER_PEOPLE_MAX=1
 set /P NUMBER_PEOPLE_MAX="** Maximum number of people shown in the image:"
 
-rem ---  Depth estimation interval
-echo --------------
-set DEPTH_INTERVAL=10
-echo Please enter the interval of the frame to be estimated depth.
-echo The smaller the value, the finer the depth estimation. (It takes time to do so)
-echo If nothing is entered and ENTER is pressed, processing is done at the interval of "%DEPTH_INTERVAL%".
-set /P DEPTH_INTERVAL="** Depth estimation interval: "
+rem ---  Frame to end analysis
 
-rem ---  Flip frame list
 echo --------------
-set REVERSE_FRAME_LIST=
-echo Please specify the frame number (0 start) that Openpose misrecognized and flipped.
-echo A reversing judgment is made for the frame with the number specified here, and if reverse verification is done, the joint position will be reversed.
-echo Multiple items can be specified with a comma. In addition, the range can be specified with a hyphen.
-echo Ex.) 4,10-12 ... 4,10,11,12 are the inverted judgment target frame.
-set /P REVERSE_FRAME_LIST="** Flip frame list: "
+echo Please enter the frame number to end analysis. (0 beginning)
+echo When you adjust the reverse or order, 
+echo you can finish the process and see the result without outputting to the end.
+echo If nothing is input and ENTER is pressed, analysis is performed to the end.
+set FRAME_END=-1
+set /P FRAME_END="** Analysis end frame number: "
 
-rem ---  Sequential list
+rem ---  反転指定リスト
+echo --------------
+set REVERSE_SPECIFIC_LIST=
+echo Specify the frame number (0 starting) that is inverted by Openpose by mistake, the person INDEX order, and the contents of the inversion.
+echo In the order that Openpose recognizes at 0F, INDEX is assigned as 0, 1, ....
+echo Format: [{frame number}: Person who wants to specify reverse INDEX, {reverse content}]
+echo {reverse content}: R: Whole body inversion, U: Upper body inversion, L: Lower body inversion, N: No inversion
+echo 例）[10:1,R]　…　The whole person flips the first person in the 10th frame.
+echo Since the contents are output in the above format in message.log when inverted output, please refer to that.
+echo As in [10:1,R][30:0,U], multiple items can be specified in parentheses.
+set /P REVERSE_SPECIFIC_LIST="** Reverse specification list: "
+
+rem ---  順番指定リスト
 echo --------------
 set ORDER_SPECIFIC_LIST=
-echo Please specify the person INDEX order after crossing with multiple person trace.
-echo 0F Counts as 0th, 1st, in order from the left of the standing position.
-echo Format: [<frame number>: index of the 0 th person from the left, 1st from the left ...]
-echo Example) [10: 1, 0] ... 10F sort in order of the first person from the left and the 0th person.
-echo Multiple items can be specified in parentheses as [10: 1, 0] [30: 0, 1].
-echo Example) [10-15: 1, 0] [10: 0, 1] ... 10 to 15F Eye: 1, 0 order, 30F eye: 0, 1 order.
-set /P ORDER_SPECIFIC_LIST="** Sequential list: "
+echo In the multi-person trace, please specify the person INDEX order after crossing.
+echo In the case of a one-person trace, it is OK to leave it blank.
+echo In the order that Openpose recognizes at 0F, INDEX is assigned as 0, 1, ....
+echo Format: [{frame number}: index of first estimated person, index of first estimated person, ...]
+echo 例）[10:1,0]　…　The order of the 10th frame is rearranged in the order of the first person from the left and the zeroth person.
+echo The order in which messages are output in message.log is left in the above format, so please refer to it.
+echo As in [10:1,0][30:0,1], multiple items can be specified in parentheses.
+echo Also, in output_XXX.avi, colors are assigned to people in the estimated order. The right half of the body is red and the left half is the following color.
+echo 0: green, 1: blue, 2: white, 3: yellow, 4: peach, 5: light blue, 6: dark green, 7: dark blue, 8: gray, 9: dark yellow, 10: dark peach, 11: dark light blue
+set /P ORDER_SPECIFIC_LIST="** Ordered list: "
+
+rem ---  MMD用AVI出力
+echo --------------
+echo Please output AVI for MMD or enter yes or no.
+echo AVI for MMD outputs information in smaller size by putting person-specific index information on the Openpose result.
+echo When nothing is input and ENTER is pressed, AVI for MMD is output.
+set AVI_OUTPUT=yes
+set /P AVI_OUTPUT="** AVI for MMD[yes/no]: "
 
 rem ---  Presence of detailed log
 
@@ -86,6 +110,6 @@ IF /I "%IS_DEBUG%" EQU "warn" (
 )
 
 rem ---  python 実行
-python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --number_people_max %NUMBER_PEOPLE_MAX% --reverse_frames "%REVERSE_FRAME_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --verbose %VERBOSE%
+python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_specific "%REVERSE_SPECIFIC_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --avi_output %AVI_OUTPUT% --verbose %VERBOSE% --number_people_max %NUMBER_PEOPLE_MAX% --end_frame_no %FRAME_END%
 
 
