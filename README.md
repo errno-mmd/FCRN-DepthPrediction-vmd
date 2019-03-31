@@ -1,4 +1,4 @@
-# VMD-3d-pose-baseline-multi
+# FCRN-DepthPrediction-vmd
 
 このプログラムは、[FCRN-DepthPrediction](https://github.com/iro-cp/FCRN-DepthPrediction) \(Iro Laina様他\) を miu(miu200521358) がfork して、改造しました。
 
@@ -39,8 +39,6 @@ python3系 で以下をインストールして下さい
 ## 実行方法
 
 1. [Openpose簡易起動バッチ](https://github.com/miu200521358/openpose-simple) で データを解析する
-1. [OpenposeTo3D.bat](OpenposeTo3D.bat) を実行する
-	- [OpenposeTo3D_en.bat](OpenposeTo3D_en.bat) is in English. !! The logs remain in Japanese.
 1. [VideoToDepth.bat](VideoToDepth.bat) を実行する
 	- [VideoToDepth_en.bat](VideoToDepth_en.bat) is in English. !! The logs remain in Japanese.
 1. `解析対象映像ファイルパス` が聞かれるので、動画のファイルフルパスを入力する
@@ -85,5 +83,7 @@ python3系 で以下をインストールして下さい
 
 ## ライセンス
 Simplified BSD License
+
+MMD自動トレースの結果を公開・配布する場合は、必ずライセンスのご確認と明記をお願い致します。Unity等、他のアプリケーションの場合も同様です。
 
 [MMDモーショントレース自動化キットライセンス](https://ch.nicovideo.jp/miu200521358/blomaga/ar1686913)
