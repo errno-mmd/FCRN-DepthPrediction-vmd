@@ -30,6 +30,14 @@ IF /I "%OPENPOSE_JSON%" EQU "" (
     EXIT /B
 )
 
+rem ---  深度推定間隔
+echo --------------
+set DEPTH_INTERVAL=10
+echo 深度推定を行うフレームの間隔を数値で入力して下さい。
+echo 値が小さいほど、細かく深度推定を行います。（その分、時間がかかります）
+echo 何も入力せず、ENTERを押下した場合、「%DEPTH_INTERVAL%」間隔で処理します。
+set /P DEPTH_INTERVAL="■深度推定間隔: "
+
 rem ---  映像に映っている最大人数
 
 echo --------------
@@ -39,39 +47,44 @@ echo 複数人数が同程度の大きさで映っている映像で1人だけ指定した場合、解析対象が飛
 set NUMBER_PEOPLE_MAX=1
 set /P NUMBER_PEOPLE_MAX="■映像に映っている最大人数: "
 
-rem ---  深度推定間隔
-echo --------------
-set DEPTH_INTERVAL=10
-echo 深度推定を行うフレームの間隔を数値で入力して下さい。
-echo 値が小さいほど、細かく深度推定を行います。（その分、時間がかかります）
-echo 何も入力せず、ENTERを押下した場合、「%DEPTH_INTERVAL%」間隔で処理します。
-set /P DEPTH_INTERVAL="■深度推定間隔: "
+rem ---  解析を終了するフレーム
 
-rem ---  反転フレームリスト
 echo --------------
-set REVERSE_FRAME_LIST=
-echo Openposeが誤認識して反転しているフレーム番号(0始まり)を指定してください。
-echo ここで指定された番号のフレームに対して、反転判定を行い、反転認定された場合、関節位置が反転されます。
-echo カンマで複数件指定可能です。また、ハイフンで範囲が指定可能です。
-echo 例）4,10-12　…　4,10,11,12 が反転判定対象フレームとなります。
-set /P REVERSE_FRAME_LIST="■反転フレームリスト: "
+echo 解析を終了するフレームNoを入力して下さい。(0始まり)
+echo 反転や順番を調整する際に、最後まで出力せずとも処理を終了して結果を見ることができます。
+echo 何も入力せず、ENTERを押下した場合、最後まで解析します。
+set FRAME_END=-1
+set /P FRAME_END="■解析終了フレームNo: "
+
+rem ---  反転指定リスト
+echo --------------
+set REVERSE_SPECIFIC_LIST=
+echo Openposeが誤認識して反転しているフレーム番号(0始まり)、人物INDEX順番、反転の内容を指定してください。
+echo Openposeが0F目で認識した順番に0, 1, とINDEXが割り当てられます。
+echo フォーマット：［＜フレーム番号＞:反転を指定したい人物INDEX,<反転内容>］
+echo <反転内容>: R: 全身反転, U: 上半身反転, L: 下半身反転, N: 反転なし
+echo 例）[10:1,R]　…　10F目の1番目の人物を全身反転します。
+echo message.logに上記フォーマットで、反転出力した場合にその内容を出力しているので、それを参考にしてください。
+echo [10:1,R][30:0,U]のように、カッコ単位で複数件指定可能です。
+set /P REVERSE_SPECIFIC_LIST="■反転指定リスト: "
 
 rem ---  順番指定リスト
 echo --------------
 set ORDER_SPECIFIC_LIST=
-echo 複数人数トレースで、交差後の人物INDEX順番を指定してください。
-echo フォーマット：［＜フレーム番号＞:左から0番目にいる人物のインデックス,左から1番目…］
-echo 人物インデックスは、Openposeの出力結果JSONの出力順に対応しています。
+echo 複数人数トレースで、交差後の人物INDEX順番を指定してください。1人トレースの場合は空欄のままで大丈夫です。
+echo Openposeが0F目で認識した順番に0, 1, とINDEXが割り当てられます。
+echo フォーマット：［＜フレーム番号＞:0番目に推定された人物のインデックス,1番目に推定された人物のインデックス, …］
 echo 例）[10:1,0]　…　10F目は、左から1番目の人物、0番目の人物の順番に並べ替えます。
+echo message.logに上記フォーマットで、どのような順番で出力したかを残しているので、それを参考にしてください。
 echo [10:1,0][30:0,1]のように、カッコ単位で複数件指定可能です。
-echo 例）[10-15:1,0][30:0,1]　…　10～15F目: 1, 0の順番、30F目: 0, 1の順番。
+echo また、output_XXX.aviでは、推定された順番に人物に色が割り当てられています。体の右半分は赤、左半分は以下の色になります。
+echo 0:緑, 1:青, 2:白, 3:黄, 4:桃, 5:水色, 6:濃緑, 7:濃青, 8:灰色, 9:濃黄, 10:濃桃, 11:濃水色
 set /P ORDER_SPECIFIC_LIST="■順番指定リスト: "
 
 rem ---  MMD用AVI出力
 echo --------------
 echo MMD用AVIを出すか、yes か no を入力して下さい。
 echo MMD用AVIは、Openposeの結果に、人物INDEX別情報を乗せて、サイズ小さめで出力します。
-echo コーデックは「IYUV」「I420」のいずれかです。
 echo 何も入力せず、ENTERを押下した場合、MMD用AVIを出力します。
 set AVI_OUTPUT=yes
 set /P AVI_OUTPUT="■MMD用AVI[yes/no]: "
@@ -94,6 +107,7 @@ IF /I "%IS_DEBUG%" EQU "warn" (
 )
 
 rem ---  python 実行
-python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --number_people_max %NUMBER_PEOPLE_MAX% --reverse_frames "%REVERSE_FRAME_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --avi_output %AVI_OUTPUT% --verbose %VERBOSE%
+python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_specific "%REVERSE_SPECIFIC_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --avi_output %AVI_OUTPUT% --verbose %VERBOSE% --number_people_max %NUMBER_PEOPLE_MAX% --end_frame_no %FRAME_END%
+
 
 
