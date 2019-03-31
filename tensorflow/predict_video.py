@@ -464,28 +464,28 @@ def predict_video(now_str, model_path, video_path, depth_path, interval, openpos
                     logger.debug("reverse_specific_dict _iidx: %s, pidx: %s, in: %s", _iidx, pidx, (_iidx in reverse_specific_dict and pidx in reverse_specific_dict[_iidx]))
                     if _iidx in reverse_specific_dict and pidx in reverse_specific_dict[_iidx]:
                         if 'R' in reverse_specific_dict[_iidx][pidx]:
-                            logger.warn("反転指定対象フレーム【R】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
+                            logger.debug("反転指定対象フレーム【R】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
 
                             # 全身反転
                             is_all_reverses[_iidx][pidx] = True
                             is_upper_reverses[_iidx][pidx] = False
                             is_lower_reverses[_iidx][pidx] = False
                         elif 'U' in reverse_specific_dict[_iidx][pidx]:
-                            logger.warn("反転指定対象フレーム【U】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
+                            logger.debug("反転指定対象フレーム【U】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
 
                             # 上半身反転
                             is_all_reverses[_iidx][pidx] = False
                             is_upper_reverses[_iidx][pidx] = True
                             is_lower_reverses[_iidx][pidx] = False
                         elif 'L' in reverse_specific_dict[_iidx][pidx]:
-                            logger.warn("反転指定対象フレーム【L】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
+                            logger.debug("反転指定対象フレーム【L】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
 
                             # 下半身反転
                             is_all_reverses[_iidx][pidx] = False
                             is_upper_reverses[_iidx][pidx] = False
                             is_lower_reverses[_iidx][pidx] = True
                         elif 'N' in reverse_specific_dict[_iidx][pidx]:
-                            logger.warn("反転指定対象フレーム【N】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
+                            logger.debug("反転指定対象フレーム【N】: %s(%s) rsd: %s", _iidx, _display_idx, reverse_specific_dict[_iidx][pidx])
 
                             # 反転なし
                             is_all_reverses[_iidx][pidx] = False
