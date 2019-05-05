@@ -30,6 +30,13 @@ IF /I "%OPENPOSE_JSON%" EQU "" (
     EXIT /B
 )
 
+rem ---  深度推定結果ディレクトリパス
+echo 既に深度推定を行った事がある場合、深度推定結果ディレクトリのフルパスを入力して下さい。({動画名}_json_{日時}_depth)
+echo この設定は半角英数字のみ設定可能です。
+echo ディレクトリ内に深度ファイルがある場合、深度推定結果をそのファイルから読み取ります。
+set PAST_DEPTH_PATH=
+set /P PAST_DEPTH_PATH=■深度推定結果ディレクトリパス: 
+
 rem ---  深度推定間隔
 echo --------------
 set DEPTH_INTERVAL=10
@@ -107,7 +114,7 @@ IF /I "%IS_DEBUG%" EQU "warn" (
 )
 
 rem ---  python 実行
-python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_specific "%REVERSE_SPECIFIC_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --avi_output %AVI_OUTPUT% --verbose %VERBOSE% --number_people_max %NUMBER_PEOPLE_MAX% --end_frame_no %FRAME_END%
+python tensorflow/predict_video.py --model_path tensorflow/data/NYU_FCRN.ckpt --centerz_model_path tensorflow/data2/centerz-depth.ckpt --past_depth_path "%PAST_DEPTH_PATH%" --video_path %INPUT_VIDEO% --json_path %OPENPOSE_JSON% --interval %DEPTH_INTERVAL% --reverse_specific "%REVERSE_SPECIFIC_LIST%" --order_specific "%ORDER_SPECIFIC_LIST%" --avi_output %AVI_OUTPUT% --verbose %VERBOSE% --number_people_max %NUMBER_PEOPLE_MAX% --end_frame_no %FRAME_END%
 
 
 
