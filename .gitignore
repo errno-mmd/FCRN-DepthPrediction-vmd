@@ -17,6 +17,8 @@ applications/predictor/
 applications/testdata/
 data/video/
 tensorflow/data/
+tensorflow/data2/
+tensorflow/predict_video2.py
 
 born/*.csv
 
