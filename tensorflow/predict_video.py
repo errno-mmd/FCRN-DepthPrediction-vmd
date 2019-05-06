@@ -69,6 +69,8 @@ def predict_video(now_str, model_path, centerz_model_path, video_path, depth_pat
     # フレーム開始INDEX取得
     start_json_name, start_frame, json_size = read_openpose_start_json(json_path)
 
+    logger.debug("number_people_max: %s, json_size: %s, start_frame: %s", number_people_max, json_size, start_frame)
+
     # 深度アニメーションGIF用
     png_lib = []
     # 人数分の深度データ(実際に入っているのはintervalごと)
@@ -277,7 +279,7 @@ def predict_video(now_str, model_path, centerz_model_path, video_path, depth_pat
                             # 縮尺を展開して、深度解析後の画像サイズに合わせる
                             pred_x = int(pred_width * scale_org_x)
                             pred_y = int(pred_height * scale_org_y)
-                            # logger.debug("pred_x: %s, pred_y: %s", pred_x, pred_y)
+                            logger.debug("pred_x: %s, pred_y: %s", pred_x, pred_y)
 
                             if 0 <= pred_y < len(pred[0]) and 0 <= pred_x < len(pred[0][pred_y]):
                                 depths = []
@@ -305,6 +307,8 @@ def predict_video(now_str, model_path, centerz_model_path, video_path, depth_pat
                                 pred_multi_xy_ary[_idx][dpidx][oidx] = [0, 0]
                                 pred_multi_frame_ary[_idx] = pred[0]
                         else:
+                            # 信頼度が足りない場合
+                            logger.debug("×信頼度 _idx: %s, dpidx: %s, o:%s, oidx: %s", _idx, dpidx, o, oidx)
                             pred_multi_ary[_idx][dpidx][oidx] = 0
                             pred_multi_z_ary[_idx][dpidx][oidx] = 0
                             pred_multi_xy_ary[_idx][dpidx][oidx] = [0, 0]
