@@ -7,6 +7,8 @@ import json
 import copy
 import sys
 import re
+import matplotlib
+matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 import imageio
 from collections import Counter
